@@ -7,6 +7,8 @@
 #include "Audio.h"
 #include "AsyncTCP.h"
 #include "ESPAsyncWebServer.h"
+#include <nvs_flash.h>
+#include <nvs.h>
 
 // --- LOG LEVEL DEFINITIONS ---
 #define LOG_ERROR    0
@@ -25,6 +27,8 @@ const char* ntpServer  = "pool.ntp.org";
 #define I2S_DOUT       22
 #define SD_CS          5
 #define WIFI_BUTTON_PIN 4  // <--- ПИН за бутона за Wi-Fi (свързан към GND)
+
+#define DEFAULT_VOLUME 9
 
 #define DEFAULT_PRAYER_TIMES_FILE "/prayer_times.bin"
 #define BYTES_PER_DAY 12
@@ -69,6 +73,24 @@ const unsigned long WIFI_AUTO_DURATION_AFTER_AZAN = 5 * 60 * 1000UL; // 5 minute
 DayRecord cachedPrayerTimes;
 int cachedPrayerDay = -1;
 bool cachedPrayerTimesValid = false;
+
+// --- VOLUME CONTROL AND NVS ---
+uint8_t currentVolume = 15;
+const uint8_t MIN_VOLUME = 0;
+const uint8_t MAX_VOLUME = 21;
+const char* NVS_NAMESPACE = "azan_system";
+const char* NVS_VOLUME_KEY = "volume";
+
+// --- WiFi AUTO-ON BEFORE PRAYER ---
+unsigned long wifiAutoOnTime = 0;
+bool wifiAutoOnPending = false;
+int wifiConnectRetries = 0;
+const int MAX_WIFI_RETRIES = 5;
+const unsigned long WIFI_ON_BEFORE_PRAYER = 2 * 60000UL; // Turn on 2 minutes before prayer
+unsigned long nextPrayerTime = 0;
+
+// --- AUTO WIFI OFF CONTROL ---
+bool autoWifiOffEnabled = true;
 
 // --- LOGGING AND TIMING VARIABLES ---
 unsigned long lastSecondPrint = 0;
@@ -122,6 +144,47 @@ void sysLogf(int level, const char* tag, const char* fmt, ...) {
                   levelStr, tag, buffer);
 }
 
+// --- NVS FUNCTIONS FOR PERSISTENT STORAGE ---
+void saveVolumeToNVS(uint8_t volume) {
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &nvs_handle);
+    if (err != ESP_OK) {
+        sysLogf(LOG_ERROR, "NVS", "Failed to open NVS (%s)", esp_err_to_name(err));
+        return;
+    }
+    
+    err = nvs_set_u8(nvs_handle, NVS_VOLUME_KEY, volume);
+    if (err != ESP_OK) {
+        sysLogf(LOG_ERROR, "NVS", "Failed to save volume (%s)", esp_err_to_name(err));
+    }
+    
+    err = nvs_commit(nvs_handle);
+    if (err == ESP_OK) {
+        sysLogf(LOG_DEBUG, "NVS", "Volume saved: %d", volume);
+    }
+    nvs_close(nvs_handle);
+}
+
+uint8_t loadVolumeFromNVS() {
+    nvs_handle_t nvs_handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &nvs_handle);
+    if (err != ESP_OK) {
+        sysLogf(LOG_WARN, "NVS", "Failed to open NVS for reading (%s), using default volume 9", esp_err_to_name(err));
+        return DEFAULT_VOLUME; // Return default if NVS can't be opened
+    }
+    
+    uint8_t volume = 15;
+    err = nvs_get_u8(nvs_handle, NVS_VOLUME_KEY, &volume);
+    if (err == ESP_OK) {
+        sysLogf(LOG_INFO, "NVS", "Volume loaded from NVS: %d", volume);
+    } else if (err == ESP_ERR_NVS_NOT_FOUND) {
+        sysLogf(LOG_DEBUG, "NVS", "Volume not found in NVS, using default: 15");
+    }
+    nvs_close(nvs_handle);
+    
+    return (volume >= MIN_VOLUME && volume <= MAX_VOLUME) ? volume : 15;
+}
+
 // --- УЕБ ИНТЕРФЕЙС ---
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
@@ -163,6 +226,27 @@ const char index_html[] PROGMEM = R"rawliteral(
         <div class="status-text">Текущ Азан: <span id="azan_status">...</span></div>
         <button class="btn btn-blue" onclick="sendCmd('/next-azan')">🎵 Смени Азан Файл</button>
     </div>
+
+    <div class="card">
+        <h2>🔊 Сила на Звука</h2>
+        <div class="status-text">Ниво: <span id="volume_display">50</span>%</div>
+        <input 
+            type="range" 
+            id="volume_slider"
+            min="0" 
+            max="100" 
+            value="50"
+            style="width: 100%; cursor: pointer; height: 6px;"
+            oninput="updateVolume(this.value)"
+        >
+    </div>
+
+    <div class="card">
+        <h2>⚙️ Настройки WiFi</h2>
+        <div class="status-text">Автоматично Изключване: <span id="auto_off_status">ВКЛ</span></div>
+        <button class="btn btn-blue" onclick="sendCmd('/toggle-auto-wifi-off')">🔄 Превключи</button>
+    </div>
+
     <div class="card">
         <h2>🕌 Качване на Нови Файлове</h2>
         <form method="POST" action="/upload" enctype="multipart/form-data" id="upload_form">
@@ -235,7 +319,22 @@ const char index_html[] PROGMEM = R"rawliteral(
                 document.getElementById('pf_status').innerText = data.preFajr ? "ВКЛ" : "ИЗКЛ";
                 document.getElementById('pf_status').style.color = data.preFajr ? "#2ecc71" : "#e74c3c";
                 document.getElementById('azan_status').innerText = data.currentAzan;
+                
+                // Update volume slider and display
+                const vol = Math.round((data.volume / 21) * 100);
+                document.getElementById('volume_slider').value = vol;
+                document.getElementById('volume_display').innerText = vol;
+                
+                // Update auto WiFi off status
+                document.getElementById('auto_off_status').innerText = data.autoWifiOffEnabled ? "ВКЛ" : "ИЗКЛ";
+                document.getElementById('auto_off_status').style.color = data.autoWifiOffEnabled ? "#2ecc71" : "#e74c3c";
             });
+        }
+        
+        function updateVolume(percent) {
+            const volume = Math.round((percent / 100) * 21);
+            document.getElementById('volume_display').innerText = percent;
+            fetch('/set-volume?vol=' + volume).then(res => res.text());
         }
         
         window.onload = function() {
@@ -341,10 +440,20 @@ void setup() {
         wifiIsOn = false;
     }
 
+    // --- INITIALIZE NVS FOR PERSISTENT STORAGE ---
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+    
+    // Load volume from NVS and apply
+    currentVolume = loadVolumeFromNVS();
     audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
-    audio.setVolume(15);
-    sysLogf(LOG_INFO, "AUDIO", "I2S initialized - BCLK:%d, LRC:%d, DOUT:%d | Volume: 15", 
-           I2S_BCLK, I2S_LRC, I2S_DOUT);
+    audio.setVolume(currentVolume);
+    sysLogf(LOG_INFO, "AUDIO", "I2S initialized - BCLK:%d, LRC:%d, DOUT:%d | Volume: %d", 
+           I2S_BCLK, I2S_LRC, I2S_DOUT, currentVolume);
  
 
     // Регистрираме рутовете само веднъж тук
@@ -366,8 +475,33 @@ void setup() {
         request->send(200, "text/plain", azanFiles[currentAzanIndex]);
     });
     server.on("/status-api", HTTP_GET, [](AsyncWebServerRequest *request){
-        String json = "{\"preFajr\":" + String(preFajrEnabled ? "true" : "false") + ",\"currentAzan\":\"" + String(azanFiles[currentAzanIndex]) + "\"}";
+        String json = "{\"preFajr\":" + String(preFajrEnabled ? "true" : "false") 
+                    + ",\"currentAzan\":\"" + String(azanFiles[currentAzanIndex]) 
+                    + "\",\"volume\":" + String(currentVolume)
+                    + ",\"autoWifiOffEnabled\":" + String(autoWifiOffEnabled ? "true" : "false")
+                    + "}";
         request->send(200, "application/json", json);
+    });
+    server.on("/set-volume", HTTP_GET, [](AsyncWebServerRequest *request){
+        if (request->hasParam("vol")) {
+            uint8_t newVolume = atoi(request->getParam("vol")->value().c_str());
+            if (newVolume >= MIN_VOLUME && newVolume <= MAX_VOLUME) {
+                currentVolume = newVolume;
+                audio.setVolume(currentVolume);
+                saveVolumeToNVS(currentVolume);
+                sysLogf(LOG_INFO, "AUDIO", "Volume changed to: %d", currentVolume);
+                request->send(200, "text/plain", "OK");
+            } else {
+                request->send(400, "text/plain", "Invalid volume");
+            }
+        } else {
+            request->send(400, "text/plain", "Missing vol parameter");
+        }
+    });
+    server.on("/toggle-auto-wifi-off", HTTP_GET, [](AsyncWebServerRequest *request){
+        autoWifiOffEnabled = !autoWifiOffEnabled;
+        sysLogf(LOG_INFO, "WEB", "Auto WiFi off toggled: %s", autoWifiOffEnabled ? "ON" : "OFF");
+        request->send(200, "text/plain", autoWifiOffEnabled ? "ON" : "OFF");
     });
     server.on("/upload", HTTP_POST, [](AsyncWebServerRequest *request){
         request->send(200, "text/html", "<h3>✅ File uploaded successfully!</h3><a href='/'>Back</a>");
@@ -476,30 +610,82 @@ void loop() {
         autoWifiShutdownDone = true;
     }
     
-    // --- AUTO WI-FI ON/OFF AFTER AZAN FINISHES (Non-blocking detection) ---
+    // --- AUTO WI-FI ON BEFORE PRAYER (with retry logic) ---
+    struct tm timeinfo;
+    if (getLocalTime(&timeinfo)) {
+        time_t rawtime = mktime(&timeinfo);
+        rawtime += (timeOffsetMinutes * 60);
+        struct tm *adjustedTime = localtime(&rawtime);
+        int day = adjustedTime->tm_yday + 1;
+        int currentTotalMinutes = adjustedTime->tm_hour * 60 + adjustedTime->tm_min;
+        
+        // Load prayer times if needed
+        if (cachedPrayerDay != day || !cachedPrayerTimesValid) {
+            if (getDayRecordFromBin(day, cachedPrayerTimes)) {
+                cachedPrayerDay = day;
+                cachedPrayerTimesValid = true;
+            }
+        }
+        
+        // Find the next prayer time (skip DUHA)
+        if (cachedPrayerTimesValid) {
+            int nextPrayer = -1;
+            for (int i = 0; i < 6; i++) {
+                if (i == 1) continue; // Skip DUHA
+                if (cachedPrayerTimes.times[i] >= currentTotalMinutes) {
+                    nextPrayer = cachedPrayerTimes.times[i];
+                    break;
+                }
+            }
+            
+            // If no prayer found today, use first prayer tomorrow
+            if (nextPrayer == -1 && getDayRecordFromBin(day + 1, cachedPrayerTimes)) {
+                nextPrayer = cachedPrayerTimes.times[0];
+            }
+            
+            if (nextPrayer != -1) {
+                int minuteBeforePrayer = nextPrayer - (WIFI_ON_BEFORE_PRAYER / 60000);
+                
+                // Turn on WiFi 2 minutes before prayer
+                if (currentTotalMinutes == minuteBeforePrayer && !wifiAutoOnPending) {
+                    sysLogf(LOG_INFO, "SYSTEM", "Prayer in 2 minutes - Starting WiFi auto-on (retry up to %d times)", MAX_WIFI_RETRIES);
+                    wifiAutoOnPending = true;
+                    wifiConnectRetries = 0;
+                    wifiAutoOnTime = millis();
+                    if (!wifiIsOn) {
+                        toggleWiFi();
+                    }
+                }
+                
+                // Retry WiFi connection if not connected
+                if (wifiAutoOnPending && !wifiIsOn) {
+                    if (millis() - wifiAutoOnTime > 10000 && wifiConnectRetries < MAX_WIFI_RETRIES) {
+                        wifiConnectRetries++;
+                        sysLogf(LOG_INFO, "SYSTEM", "WiFi retry %d/%d", wifiConnectRetries, MAX_WIFI_RETRIES);
+                        wifiAutoOnTime = millis();
+                        toggleWiFi();
+                    } else if (wifiConnectRetries >= MAX_WIFI_RETRIES) {
+                        sysLog(LOG_WARN, "SYSTEM", "WiFi auto-on failed after retries, giving up");
+                        wifiAutoOnPending = false;
+                    }
+                }
+                
+                // Turn off WiFi 5 minutes after prayer starts (if autoWifiOffEnabled)
+                if (wifiAutoOnPending && wifiIsOn && currentTotalMinutes >= nextPrayer) {
+                    unsigned long prayerTimeMs = (currentTotalMinutes - nextPrayer) * 60000 + (adjustedTime->tm_sec * 1000);
+                    if (prayerTimeMs >= WIFI_AUTO_DURATION_AFTER_AZAN && autoWifiOffEnabled) {
+                        sysLog(LOG_INFO, "SYSTEM", "5 minutes after prayer - Auto-disabling WiFi");
+                        toggleWiFi();
+                        wifiAutoOnPending = false;
+                        wifiConnectRetries = 0;
+                    }
+                }
+            }
+        }
+    }
+    
+    // --- LEGACY: AUTO WI-FI OFF AFTER AZAN FINISHES (kept for compatibility) ---
     bool currentAudioRunning = audio.isRunning();
-    
-    // Detect audio STOP (was playing, now stopped)
-    if (wasAudioPlaying && !currentAudioRunning && isAudioPlaying) {
-        sysLog(LOG_INFO, "SYSTEM", "Azan finished - Auto-enabling WiFi for 5 minutes");
-        if (!wifiIsOn) {
-            toggleWiFi();
-        }
-        postPrayerWifiActive = true;
-        postPrayerWifiTimer = millis(); // Record time when we enabled WiFi
-    }
-    
-    // Auto-disable WiFi after 5 minutes
-    if (postPrayerWifiActive && (millis() - postPrayerWifiTimer >= WIFI_AUTO_DURATION_AFTER_AZAN)) {
-        sysLog(LOG_INFO, "SYSTEM", "5-minute WiFi timeout after Azan - Auto-disabling");
-        if (wifiIsOn) {
-            toggleWiFi();
-        }
-        postPrayerWifiActive = false;
-        postPrayerWifiTimer = 0;
-    }
-    
-    // Update audio state for next iteration
     wasAudioPlaying = currentAudioRunning;
     
     unsigned long currentMs = millis();
@@ -722,7 +908,19 @@ void handleDebugConsole() {
         }
         else if (input == "AUDIOINFO") {
             sysLogf(LOG_INFO, "DEBUG", "Audio Info: isRunning=%d | isPlaying=%d | Volume=%d",
-                   audio.isRunning(), isAudioPlaying, 15);
+                   audio.isRunning(), isAudioPlaying, currentVolume);
+        }
+        else if (input == "WIFI_ON") {
+            sysLog(LOG_INFO, "DEBUG", "Turning WiFi ON from terminal");
+            if (!wifiIsOn) {
+                toggleWiFi();
+            } else {
+                sysLog(LOG_INFO, "DEBUG", "WiFi is already ON");
+            }
+        }
+        else if (input == "AUTO_WIFI_OFF_TOGGLE") {
+            autoWifiOffEnabled = !autoWifiOffEnabled;
+            sysLogf(LOG_INFO, "DEBUG", "Auto WiFi off toggled: %s", autoWifiOffEnabled ? "ON" : "OFF");
         }
         else {
             sysLogf(LOG_WARN, "DEBUG", "Unknown command: '%s'", input.c_str());
@@ -734,6 +932,8 @@ void handleDebugConsole() {
             sysLog(LOG_INFO, "DEBUG", "  SDLS - List all files on SD card");
             sysLog(LOG_INFO, "DEBUG", "  PLAYTEST:filename - Test audio playback");
             sysLog(LOG_INFO, "DEBUG", "  AUDIOINFO - Show audio library status");
+            sysLog(LOG_INFO, "DEBUG", "  WIFI_ON - Turn WiFi ON for debug");
+            sysLog(LOG_INFO, "DEBUG", "  AUTO_WIFI_OFF_TOGGLE - Toggle auto WiFi off feature");
         }
     }
 }
