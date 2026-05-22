@@ -5,13 +5,13 @@
 #include "SD.h"
 #include "FS.h"
 #include "SPI.h"
-#include "Audio.h"
 #include "AsyncTCP.h"
 #include "ESPAsyncWebServer.h"
 #include <nvs_flash.h>
 #include <nvs.h>
-#include <RTClib.h>
 #include <Wire.h>
+#include "TimeManager.h"
+#include "AudioManager.h"
 
 // --- LOG LEVEL DEFINITIONS ---
 #define LOG_ERROR    0
@@ -40,14 +40,10 @@ struct DayRecord {
     uint16_t times[6]; 
 };
 
-// --- RTC_DS3231 CONFIGURATION ---
-RTC_DS3231 rtc;
-bool rtcInitialized = false;
-unsigned long lastRTCSync = 0;
-const unsigned long RTC_SYNC_INTERVAL = 3600000UL; // Sync RTC from NTP every 1 hour
+TimeManager timeMgr;
+AudioManager audioMgr;
 
 // Глобални обекти
-Audio audio;
 AsyncWebServer server(80);
 SemaphoreHandle_t spiMutex = NULL;
 bool sdCardInitialized = false;
@@ -59,8 +55,6 @@ const char* azanFiles[] = {"/Luhaidan_Azan_1.mp3", "/Bahanan_Azan_1.mp3 ", "/aza
 const int numAzanFiles = 3;
 int currentAzanIndex = 0; 
 int lastPreFajrDay = -1; 
-TaskHandle_t AudioTaskHandle = NULL;
-
 // --- AUDIO DEBUG VARIABLES ---
 bool lastAudioRunningState = false;
 uint32_t lastAudioDuration = 0;
@@ -151,6 +145,10 @@ void sysLogf(int level, const char* tag, const char* fmt, ...) {
     Serial.printf("[%02d:%02d:%02d][%s][%s]: %s\n", 
                   timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, 
                   levelStr, tag, buffer);
+}
+
+void moduleLog(int level, const char* tag, const char* message) {
+    sysLog(level, tag, message);
 }
 
 // --- NVS FUNCTIONS FOR PERSISTENT STORAGE ---
@@ -356,8 +354,6 @@ const char index_html[] PROGMEM = R"rawliteral(
 </html>
 )rawliteral";
 
-void audioTask(void *pvParameters);
-void syncTime();
 void checkAndPlayAzan();
 void handleDebugConsole();
 void printStatus();
@@ -367,12 +363,8 @@ void printHealthStatus();
 int getTimeToNextPrayer();
 bool fileExists(const char* path);
 uint32_t getFileSize(const char* path);
-void setupAudioCallbacks();
 void playAudioFile(const char* filePath);
 bool deleteFile(const char* path);
-bool initRTC();
-bool readRTCTime(struct tm &timeinfo);
-void syncRTCFromNTP();
 
 // --- SAFE WIFI TOGGLE FUNCTION ---
 void toggleWiFi() {
@@ -383,6 +375,7 @@ void toggleWiFi() {
         delay(150);
         WiFi.mode(WIFI_OFF);
         wifiIsOn = false;
+        timeMgr.setWifiConnected(false);
         sysLog(LOG_INFO, "WIFI", "Wi-Fi turned OFF");
     } else {
         sysLog(LOG_INFO, "WIFI", "Turning ON...");
@@ -402,9 +395,8 @@ void toggleWiFi() {
             sysLogf(LOG_INFO, "WIFI", "Web interface: http://%s", WiFi.localIP().toString().c_str());
             server.begin();
             // Only sync time if WiFi is actually connected
-            if (WiFi.status() == WL_CONNECTED) {
-                syncTime();
-            }
+            timeMgr.setWifiConnected(true);
+            timeMgr.requestNtpSync();
             wifiIsOn = true;
         } else {
             sysLog(LOG_WARN, "WIFI", "Connection failed. Staying OFF");
@@ -432,9 +424,7 @@ void setup() {
         sysLog(LOG_ERROR, "SDCARD", "Initialization failed!");
     }
 
-    // --- INITIALIZE RTC_DS3231 (via I2C default pins: GPIO21=SDA, GPIO22=SCL) ---
     Wire.begin();
-    initRTC();
 
     WiFi.mode(WIFI_STA);
     WiFi.setSleep(false); // Disable power saving for faster/stable connection
@@ -446,11 +436,11 @@ void setup() {
         attempts++;
     }
     
-    if (WiFi.status() == WL_CONNECTED) {
+    bool wifiConnected = (WiFi.status() == WL_CONNECTED);
+    if (wifiConnected) {
         sysLog(LOG_INFO, "WIFI", "Connected successfully");
         sysLogf(LOG_INFO, "WIFI", "Web interface: http://%s", WiFi.localIP().toString().c_str());
-        // Only sync time if WiFi is actually connected
-        syncTime();
+        wifiIsOn = true;
     } else {
         sysLog(LOG_WARN, "WIFI", "Connection failed. Running in offline mode");
         wifiIsOn = false;
@@ -464,18 +454,27 @@ void setup() {
     }
     ESP_ERROR_CHECK(ret);
     
-    // Load volume from NVS and apply
     currentVolume = loadVolumeFromNVS();
-    audio.setPinout(I2S_BCLK, I2S_LRC, I2S_DOUT);
-    audio.setVolume(currentVolume);
-    sysLogf(LOG_INFO, "AUDIO", "I2S initialized - BCLK:%d, LRC:%d, DOUT:%d | Volume: %d", 
-           I2S_BCLK, I2S_LRC, I2S_DOUT, currentVolume);
+
+    TimeManager::Config tmCfg;
+    tmCfg.ntpServer = ntpServer;
+    timeMgr.begin(tmCfg, moduleLog);
+    timeMgr.setWifiConnected(wifiConnected);
+    if (wifiConnected && !timeMgr.rtcUsable()) {
+        timeMgr.requestNtpSync();
+    }
+
+    AudioManager::Config audioCfg;
+    audioCfg.pins = {I2S_BCLK, I2S_LRC, I2S_DOUT};
+    audioCfg.defaultVolume = currentVolume;
+    audioMgr.begin(audioCfg, spiMutex, sdCardInitialized, moduleLog);
+    audioMgr.setVolume(currentVolume);
  
 
     // Регистрираме рутовете само веднъж тук
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){ request->send_P(200, "text/html", index_html); });
     server.on("/stop", HTTP_GET, [](AsyncWebServerRequest *request){
-        audio.stopSong();
+        audioMgr.stop();
         sysLog(LOG_INFO, "WEB", "STOP command received");
         isAudioPlaying = false;
         request->send(200, "text/plain", "Stopped");
@@ -503,7 +502,7 @@ void setup() {
             uint8_t newVolume = atoi(request->getParam("vol")->value().c_str());
             if (newVolume >= MIN_VOLUME && newVolume <= MAX_VOLUME) {
                 currentVolume = newVolume;
-                audio.setVolume(currentVolume);
+                audioMgr.setVolume(currentVolume);
                 saveVolumeToNVS(currentVolume);
                 sysLogf(LOG_INFO, "AUDIO", "Volume changed to: %d", currentVolume);
                 request->send(200, "text/plain", "OK");
@@ -602,11 +601,11 @@ void setup() {
 
     if (wifiIsOn) server.begin();
 
-    xTaskCreatePinnedToCore(audioTask, "AudioTask", 16384, NULL, 5, &AudioTaskHandle, 0);
     printStatus();
 }
 
 void loop() {
+    timeMgr.update();
     handleDebugConsole(); 
     
     // --- HARDWARE BUTTON CHECK FOR WI-FI ---
@@ -701,7 +700,7 @@ void loop() {
     }
     
     // --- LEGACY: AUTO WI-FI OFF AFTER AZAN FINISHES (kept for compatibility) ---
-    bool currentAudioRunning = audio.isRunning();
+    bool currentAudioRunning = audioMgr.isRunning();
     wasAudioPlaying = currentAudioRunning;
     
     unsigned long currentMs = millis();
@@ -711,7 +710,7 @@ void loop() {
         lastSecondPrint = currentMs;
         struct tm timeinfo;
         if (getLocalTime(&timeinfo)) {
-            bool audioRunning = audio.isRunning();
+            bool audioRunning = audioMgr.isRunning();
             sysLogf(LOG_DEBUG, "TIME", "Current: %02d:%02d:%02d | Audio: %s (State: %s)", 
                    timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec,
                    isAudioPlaying ? "PLAYING" : "IDLE",
@@ -735,131 +734,6 @@ void loop() {
         checkAndPlayAzan();    
     }
     yield();
-}
-
-void audioTask(void *pvParameters) {
-    sysLog(LOG_DEBUG, "AUDIO", "Audio task started on core 0 with high priority");
-    uint32_t loopCounter = 0;
-    while(1) {
-        audio.loop();
-        loopCounter++;
-        
-        // Log audio stats every 5000 loops (roughly every 5 seconds)
-        if (loopCounter % 5000 == 0 && isAudioPlaying) {
-            sysLogf(LOG_DEBUG, "AUDIO_TASK", "Audio loop running - isRunning: %d, loopCount: %lu",
-                   audio.isRunning(), loopCounter);
-        }
-        
-        // Minimal delay to allow other tasks to run
-        vTaskDelay(pdMS_TO_TICKS(1));
-    }
-}
-
-// --- RTC_DS3231 INITIALIZATION ---
-bool initRTC() {
-    if (!rtc.begin()) {
-        sysLog(LOG_WARN, "RTC", "RTC_DS3231 not found! Will use NTP time.");
-        rtcInitialized = false;
-        return false;
-    }
-    
-    rtcInitialized = true;
-    
-    if (rtc.lostPower()) {
-        sysLog(LOG_WARN, "RTC", "RTC lost power, will sync from NTP when available");
-    } else {
-        sysLog(LOG_INFO, "RTC", "✓ RTC_DS3231 initialized successfully");
-    }
-    
-    return true;
-}
-
-// --- READ TIME FROM RTC ---
-bool readRTCTime(struct tm &timeinfo) {
-    if (!rtcInitialized) return false;
-    
-    DateTime now = rtc.now();
-    
-    timeinfo.tm_year = now.year() - 1900;
-    timeinfo.tm_mon = now.month() - 1;
-    timeinfo.tm_mday = now.day();
-    timeinfo.tm_hour = now.hour();
-    timeinfo.tm_min = now.minute();
-    timeinfo.tm_sec = now.second();
-    timeinfo.tm_yday = 0; // Not critical for this app
-    timeinfo.tm_wday = now.dayOfTheWeek();
-    
-    return true;
-}
-
-// --- SYNC RTC FROM NTP (call this after NTP sync) ---
-void syncRTCFromNTP() {
-    if (!rtcInitialized) return;
-    if (lastRTCSync + RTC_SYNC_INTERVAL > millis()) return; // Don't sync too often
-    
-    struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) {
-        sysLog(LOG_WARN, "RTC", "Could not get time from system to sync RTC");
-        return;
-    }
-    
-    DateTime newTime(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-                     timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-    rtc.adjust(newTime);
-    lastRTCSync = millis();
-    
-    sysLogf(LOG_INFO, "RTC", "✓ RTC synced from NTP: %04d-%02d-%02d %02d:%02d:%02d",
-           timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-           timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-}
-
-void syncTime() {
-    sysLog(LOG_DEBUG, "TIMESYNC", "Starting time synchronization...");
-    
-    // Try RTC first if available
-    if (rtcInitialized) {
-        struct tm rtcTime;
-        if (readRTCTime(rtcTime)) {
-            if (rtcTime.tm_year >= (2023 - 1900)) {
-                // RTC has valid time, use it to set system time
-                time_t rtcUnix = mktime(&rtcTime);
-                struct timeval tv = { .tv_sec = rtcUnix, .tv_usec = 0 };
-                settimeofday(&tv, nullptr);
-                
-                sysLogf(LOG_INFO, "TIMESYNC", "✓ Time set from RTC: %04d-%02d-%02d %02d:%02d:%02d", 
-                       rtcTime.tm_year + 1900, rtcTime.tm_mon + 1, rtcTime.tm_mday,
-                       rtcTime.tm_hour, rtcTime.tm_min, rtcTime.tm_sec);
-                return;
-            }
-        }
-    }
-    
-    // RTC failed or not initialized, fallback to NTP
-    sysLog(LOG_DEBUG, "NTP", "RTC unavailable or invalid, falling back to NTP sync...");
-    configTime(2 * 3600, 3600, ntpServer);
-    
-    // Wait for NTP time to be set
-    time_t now = time(nullptr);
-    struct tm timeinfo = *localtime(&now);
-    int attempts = 0;
-    while (timeinfo.tm_year < (2023 - 1900) && attempts < 20) {
-        delay(500);
-        now = time(nullptr);
-        timeinfo = *localtime(&now);
-        attempts++;
-    }
-    
-    if (timeinfo.tm_year >= (2023 - 1900)) {
-        sysLogf(LOG_INFO, "NTP", "✓ Time synced from NTP: %04d-%02d-%02d %02d:%02d:%02d", 
-               timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-               timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-        
-        // Update RTC with NTP time
-        syncRTCFromNTP();
-    } else {
-        sysLogf(LOG_WARN, "NTP", "✗ Time sync failed (year still %d, tried %d times)", 
-               timeinfo.tm_year + 1900, attempts);
-    }
 }
 
 void checkAndPlayAzan() {
@@ -928,7 +802,7 @@ void checkAndPlayAzan() {
     }
     
     // --- CHECK IF AUDIO FINISHED PLAYING ---
-    bool currentAudioRunningState = audio.isRunning();
+    bool currentAudioRunningState = audioMgr.isRunning();
     if (isAudioPlaying && lastAudioRunningState && !currentAudioRunningState) {
         isAudioPlaying = false;
         unsigned long duration = millis() - audioStartTime;
@@ -1006,7 +880,7 @@ void handleDebugConsole() {
         }
         else if (input == "AUDIOINFO") {
             sysLogf(LOG_INFO, "DEBUG", "Audio Info: isRunning=%d | isPlaying=%d | Volume=%d",
-                   audio.isRunning(), isAudioPlaying, currentVolume);
+                   audioMgr.isRunning(), isAudioPlaying, currentVolume);
         }
         else if (input == "WIFI_ON") {
             sysLog(LOG_INFO, "DEBUG", "Turning WiFi ON from terminal");
@@ -1053,10 +927,15 @@ void printStatus() {
            timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, timeOffsetMinutes);
     sysLogf(LOG_INFO, "STATUS", "Virtual time: %02d:%02d:%02d | Day of year: %d", 
            adj->tm_hour, adj->tm_min, adj->tm_sec, day);
-    sysLogf(LOG_INFO, "STATUS", "Wi-Fi: %s | SD Card: %s | Audio: %s", 
+    const char* clk = timeMgr.rtcUsable() ? "RTC" : (timeMgr.activeSource() == TimeManager::Source::Ntp ? "NTP" : "NONE");
+    sysLogf(LOG_INFO, "STATUS", "Wi-Fi: %s | SD Card: %s | Audio: %s | Clock: %s", 
            wifiIsOn ? "ON" : "OFF", 
            sdCardInitialized ? "OK" : "ERROR", 
-           isAudioPlaying ? "PLAYING" : "IDLE");
+           isAudioPlaying ? "PLAYING" : "IDLE",
+           clk);
+    if (timeMgr.rtcBatterySuspect()) {
+        sysLog(LOG_WARN, "STATUS", "RTC battery suspect — replace CR2032 when possible");
+    }
     sysLogf(LOG_INFO, "STATUS", "Pre-Fajr: %s | Current Azan: %s", 
            preFajrEnabled ? "ENABLED" : "DISABLED",
            azanFiles[currentAzanIndex]);
@@ -1119,7 +998,7 @@ void printHealthStatus() {
     }
     
     // --- Audio Status ---
-    bool audioRunning = audio.isRunning();
+    bool audioRunning = audioMgr.isRunning();
     const char* audioStatus = isAudioPlaying ? (audioRunning ? "PLAYING" : "STOPPING") : "IDLE";
     
     // --- Build comprehensive health message ---
@@ -1232,38 +1111,7 @@ bool deleteFile(const char* path) {
 
 // --- WRAPPER TO PLAY AUDIO WITH DETAILED LOGGING ---
 void playAudioFile(const char* filePath) {
-    if (!filePath || strlen(filePath) == 0) {
-        sysLog(LOG_ERROR, "AUDIO", "Invalid file path");
-        isAudioPlaying = false;
-        return;
-    }
-    
-    sysLogf(LOG_DEBUG, "AUDIO", "Attempting to play: %s", filePath);
-    
-    // Check file existence
-    if (!fileExists(filePath)) {
-        sysLogf(LOG_ERROR, "AUDIO", "File not found: %s", filePath);
-        isAudioPlaying = false;
-        return;
-    }
-    
-    uint32_t fileSize = getFileSize(filePath);
-    if (fileSize == 0) {
-        sysLogf(LOG_ERROR, "AUDIO", "File is empty: %s", filePath);
-        isAudioPlaying = false;
-        return;
-    }
-    
-    sysLogf(LOG_INFO, "AUDIO", "File valid. Size: %lu bytes. Connecting...", fileSize);
-    
-    if (spiMutex != NULL) xSemaphoreTake(spiMutex, portMAX_DELAY);
-    bool result = audio.connecttoFS(SD, filePath);
-    if (spiMutex != NULL) xSemaphoreGive(spiMutex);
-    
-    if (result) {
-        sysLogf(LOG_INFO, "AUDIO", "Connected to file: %s", filePath);
-    } else {
-        sysLogf(LOG_ERROR, "AUDIO", "Failed to connect to file: %s", filePath);
+    if (!audioMgr.playFromSd(filePath)) {
         isAudioPlaying = false;
     }
 }
