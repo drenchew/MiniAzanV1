@@ -1,6 +1,7 @@
 #include "Arduino.h"
 #include "WiFi.h"
 #include "time.h"
+#include <sys/time.h>
 #include "SD.h"
 #include "FS.h"
 #include "SPI.h"
@@ -9,6 +10,8 @@
 #include "ESPAsyncWebServer.h"
 #include <nvs_flash.h>
 #include <nvs.h>
+#include <RTClib.h>
+#include <Wire.h>
 
 // --- LOG LEVEL DEFINITIONS ---
 #define LOG_ERROR    0
@@ -24,9 +27,9 @@ const char* ntpServer  = "pool.ntp.org";
 // --- ПИНОВЕ ЗА ХАРДУЕР ---
 #define I2S_LRC        25
 #define I2S_BCLK       26
-#define I2S_DOUT       22
+#define I2S_DOUT       27  // <--- Changed to 27 to free up 22
 #define SD_CS          5
-#define WIFI_BUTTON_PIN 4  // <--- ПИН за бутона за Wi-Fi (свързан към GND)
+#define WIFI_BUTTON_PIN 4
 
 #define DEFAULT_VOLUME 9
 
@@ -36,6 +39,12 @@ const char* ntpServer  = "pool.ntp.org";
 struct DayRecord {
     uint16_t times[6]; 
 };
+
+// --- RTC_DS3231 CONFIGURATION ---
+RTC_DS3231 rtc;
+bool rtcInitialized = false;
+unsigned long lastRTCSync = 0;
+const unsigned long RTC_SYNC_INTERVAL = 3600000UL; // Sync RTC from NTP every 1 hour
 
 // Глобални обекти
 Audio audio;
@@ -361,6 +370,9 @@ uint32_t getFileSize(const char* path);
 void setupAudioCallbacks();
 void playAudioFile(const char* filePath);
 bool deleteFile(const char* path);
+bool initRTC();
+bool readRTCTime(struct tm &timeinfo);
+void syncRTCFromNTP();
 
 // --- SAFE WIFI TOGGLE FUNCTION ---
 void toggleWiFi() {
@@ -419,6 +431,10 @@ void setup() {
     } else {
         sysLog(LOG_ERROR, "SDCARD", "Initialization failed!");
     }
+
+    // --- INITIALIZE RTC_DS3231 (via I2C default pins: GPIO21=SDA, GPIO22=SCL) ---
+    Wire.begin();
+    initRTC();
 
     WiFi.mode(WIFI_STA);
     WiFi.setSleep(false); // Disable power saving for faster/stable connection
@@ -739,11 +755,90 @@ void audioTask(void *pvParameters) {
     }
 }
 
+// --- RTC_DS3231 INITIALIZATION ---
+bool initRTC() {
+    if (!rtc.begin()) {
+        sysLog(LOG_WARN, "RTC", "RTC_DS3231 not found! Will use NTP time.");
+        rtcInitialized = false;
+        return false;
+    }
+    
+    rtcInitialized = true;
+    
+    if (rtc.lostPower()) {
+        sysLog(LOG_WARN, "RTC", "RTC lost power, will sync from NTP when available");
+    } else {
+        sysLog(LOG_INFO, "RTC", "✓ RTC_DS3231 initialized successfully");
+    }
+    
+    return true;
+}
+
+// --- READ TIME FROM RTC ---
+bool readRTCTime(struct tm &timeinfo) {
+    if (!rtcInitialized) return false;
+    
+    DateTime now = rtc.now();
+    
+    timeinfo.tm_year = now.year() - 1900;
+    timeinfo.tm_mon = now.month() - 1;
+    timeinfo.tm_mday = now.day();
+    timeinfo.tm_hour = now.hour();
+    timeinfo.tm_min = now.minute();
+    timeinfo.tm_sec = now.second();
+    timeinfo.tm_yday = 0; // Not critical for this app
+    timeinfo.tm_wday = now.dayOfTheWeek();
+    
+    return true;
+}
+
+// --- SYNC RTC FROM NTP (call this after NTP sync) ---
+void syncRTCFromNTP() {
+    if (!rtcInitialized) return;
+    if (lastRTCSync + RTC_SYNC_INTERVAL > millis()) return; // Don't sync too often
+    
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo)) {
+        sysLog(LOG_WARN, "RTC", "Could not get time from system to sync RTC");
+        return;
+    }
+    
+    DateTime newTime(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                     timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    rtc.adjust(newTime);
+    lastRTCSync = millis();
+    
+    sysLogf(LOG_INFO, "RTC", "✓ RTC synced from NTP: %04d-%02d-%02d %02d:%02d:%02d",
+           timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+           timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+}
+
 void syncTime() {
-    sysLog(LOG_DEBUG, "NTP", "Syncing time from NTP server...");
+    sysLog(LOG_DEBUG, "TIMESYNC", "Starting time synchronization...");
+    
+    // Try RTC first if available
+    if (rtcInitialized) {
+        struct tm rtcTime;
+        if (readRTCTime(rtcTime)) {
+            if (rtcTime.tm_year >= (2023 - 1900)) {
+                // RTC has valid time, use it to set system time
+                time_t rtcUnix = mktime(&rtcTime);
+                struct timeval tv = { .tv_sec = rtcUnix, .tv_usec = 0 };
+                settimeofday(&tv, nullptr);
+                
+                sysLogf(LOG_INFO, "TIMESYNC", "✓ Time set from RTC: %04d-%02d-%02d %02d:%02d:%02d", 
+                       rtcTime.tm_year + 1900, rtcTime.tm_mon + 1, rtcTime.tm_mday,
+                       rtcTime.tm_hour, rtcTime.tm_min, rtcTime.tm_sec);
+                return;
+            }
+        }
+    }
+    
+    // RTC failed or not initialized, fallback to NTP
+    sysLog(LOG_DEBUG, "NTP", "RTC unavailable or invalid, falling back to NTP sync...");
     configTime(2 * 3600, 3600, ntpServer);
     
-    // Wait for time to be set
+    // Wait for NTP time to be set
     time_t now = time(nullptr);
     struct tm timeinfo = *localtime(&now);
     int attempts = 0;
@@ -755,9 +850,12 @@ void syncTime() {
     }
     
     if (timeinfo.tm_year >= (2023 - 1900)) {
-        sysLogf(LOG_INFO, "NTP", "✓ Time synced successfully: %04d-%02d-%02d %02d:%02d:%02d", 
+        sysLogf(LOG_INFO, "NTP", "✓ Time synced from NTP: %04d-%02d-%02d %02d:%02d:%02d", 
                timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
                timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+        
+        // Update RTC with NTP time
+        syncRTCFromNTP();
     } else {
         sysLogf(LOG_WARN, "NTP", "✗ Time sync failed (year still %d, tried %d times)", 
                timeinfo.tm_year + 1900, attempts);
@@ -1026,10 +1124,9 @@ void printHealthStatus() {
     
     // --- Build comprehensive health message ---
     sysLogf(LOG_INFO, "HEALTH", 
-           "Heap: %lu/%lu (%u%%) | WiFi: %s (RSSI:%d) | Audio: %s (Running:%s) | SD: %s | File: %s",
+           "Heap: %lu/%lu (%u%%) | WiFi: %s (RSSI:%d)| SD: %s | File: %s",
            freeHeap, totalHeap, heapUsagePercent, 
-           wifiStatus, rssi, audioStatus,
-           audioRunning ? "YES" : "NO",
+           wifiStatus, rssi, audioStatus,       
            sdCardInitialized ? "OK" : "FAIL",
            currentPlayingFile);
 }
