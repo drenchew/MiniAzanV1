@@ -17,10 +17,9 @@ void AudioManager::logf(int level, const char* tag, const char* fmt, ...) const 
     _log(level, tag, buf);
 }
 
-bool AudioManager::begin(const Config& cfg, SemaphoreHandle_t sdMutex, bool& sdReady, LogFn logFn) {
+bool AudioManager::begin(StorageManager& storage, const Config& cfg, LogFn logFn) {
     _cfg = cfg;
-    _sdMutex = sdMutex;
-    _sdReady = &sdReady;
+    _storage = &storage;
     _log = logFn;
 
     _audio.setPinout(_cfg.pins.bclk, _cfg.pins.lrc, _cfg.pins.dout);
@@ -40,9 +39,8 @@ bool AudioManager::begin(const Config& cfg, SemaphoreHandle_t sdMutex, bool& sdR
         return false;
     }
 
-    logf(LOG_INFO, "AUDIO", "I2S task core=%d prio=%u stack=%lu | BCLK=%d LRC=%d DOUT=%d",
-         (int)_cfg.taskCore, (unsigned)_cfg.taskPriority, (unsigned long)_cfg.taskStackWords,
-         _cfg.pins.bclk, _cfg.pins.lrc, _cfg.pins.dout);
+    logf(LOG_INFO, "AUDIO", "I2S task core=%d prio=%u | VSPI SD via StorageManager",
+         (int)_cfg.taskCore, (unsigned)_cfg.taskPriority);
     return true;
 }
 
@@ -52,76 +50,46 @@ void AudioManager::setVolume(uint8_t volume) {
     _audio.setVolume(volume);
 }
 
-bool AudioManager::takeSdMutex() {
-    if (_sdMutex == nullptr) return true;
-    return xSemaphoreTake(_sdMutex, _cfg.sdMutexTimeout) == pdTRUE;
-}
-
-void AudioManager::giveSdMutex() {
-    if (_sdMutex != nullptr) xSemaphoreGive(_sdMutex);
-}
-
-bool AudioManager::sdFileExists(const char* path) {
-    if (!_sdReady || !(*_sdReady) || !path) return false;
-    if (!takeSdMutex()) {
-        logf(LOG_WARN, "AUDIO", "SD mutex timeout (exists check): %s", path);
-        return false;
-    }
-    File f = SD.open(path, FILE_READ);
-    bool ok = (bool)f;
-    if (f) f.close();
-    giveSdMutex();
-    return ok;
-}
-
-uint32_t AudioManager::sdFileSize(const char* path) {
-    if (!_sdReady || !(*_sdReady) || !path) return 0;
-    if (!takeSdMutex()) return 0;
-    File f = SD.open(path, FILE_READ);
-    uint32_t sz = f ? f.size() : 0;
-    if (f) f.close();
-    giveSdMutex();
-    return sz;
-}
-
 bool AudioManager::playFromSd(const char* path) {
-    if (!path || !path[0]) {
-        logf(LOG_ERROR, "AUDIO", "Invalid path");
+    if (!_storage || !path || !path[0]) {
+        logf(LOG_ERROR, "AUDIO", "Invalid path or storage");
         return false;
     }
-    if (!_sdReady || !(*_sdReady)) {
+    if (!_storage->isReady()) {
         logf(LOG_ERROR, "AUDIO", "SD not ready");
         return false;
     }
-    if (!sdFileExists(path)) {
+    if (_storage->isPlaybackLocked()) {
+        logf(LOG_WARN, "AUDIO", "SD busy (playback lock)");
+        return false;
+    }
+    if (!_storage->fileExists(path)) {
         logf(LOG_ERROR, "AUDIO", "File not found: %s", path);
         return false;
     }
-    uint32_t sz = sdFileSize(path);
+    uint32_t sz = _storage->fileSize(path);
     if (sz == 0) {
         logf(LOG_ERROR, "AUDIO", "File empty: %s", path);
         return false;
     }
 
-    if (!takeSdMutex()) {
-        logf(LOG_WARN, "AUDIO", "SD mutex timeout — skip play: %s", path);
+    _storage->setPlaybackLocked(true);
+    bool ok = _audio.connecttoFS(_storage->mediaFs(), path);
+    if (!ok) {
+        _storage->setPlaybackLocked(false);
+        logf(LOG_ERROR, "AUDIO", "connecttoFS failed: %s", path);
         return false;
     }
-    bool ok = _audio.connecttoFS(SD, path);
-    giveSdMutex();
 
-    _playing = ok;
-    if (ok) {
-        logf(LOG_INFO, "AUDIO", "Playing %s (%lu bytes)", path, (unsigned long)sz);
-    } else {
-        logf(LOG_ERROR, "AUDIO", "connecttoFS failed: %s", path);
-    }
-    return ok;
+    _playing = true;
+    logf(LOG_INFO, "AUDIO", "Playing %s (%lu bytes)", path, (unsigned long)sz);
+    return true;
 }
 
 void AudioManager::stop() {
     _audio.stopSong();
     _playing = false;
+    if (_storage) _storage->setPlaybackLocked(false);
 }
 
 bool AudioManager::isRunning() {
@@ -133,17 +101,13 @@ void AudioManager::taskEntry(void* arg) {
 }
 
 void AudioManager::taskLoop() {
-    logf(LOG_DEBUG, "AUDIO", "I2S pump task running (decode+SD read inside library)");
-    uint32_t idleLogAt = 0;
+    logf(LOG_DEBUG, "AUDIO", "I2S pump (library reads VSPI SD during decode)");
     while (true) {
         _audio.loop();
         if (_playing && !_audio.isRunning()) {
             _playing = false;
+            if (_storage) _storage->setPlaybackLocked(false);
         }
         vTaskDelay(pdMS_TO_TICKS(_cfg.loopDelayMs));
-        if (_playing && millis() - idleLogAt > 5000) {
-            idleLogAt = millis();
-            logf(LOG_DEBUG, "AUDIO", "Pump active, isRunning=%d", _audio.isRunning() ? 1 : 0);
-        }
     }
 }

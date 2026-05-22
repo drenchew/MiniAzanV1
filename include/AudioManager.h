@@ -2,12 +2,9 @@
 
 #include <Arduino.h>
 #include <Audio.h>
-#include <FS.h>
-#include <SD.h>
-#include "freertos/semphr.h"
+#include "StorageManager.h"
 
-// Non-blocking I2S playback wrapper around ESP32-audioI2S.
-// SD access is serialized; decode+I2S runs on a dedicated FreeRTOS task.
+// Non-blocking I2S playback (ESP32-audioI2S). SD access only via StorageManager.
 class AudioManager {
 public:
     struct Pins {
@@ -25,12 +22,11 @@ public:
         uint32_t taskStackWords = 16384;
         BaseType_t taskCore = 0;
         uint32_t loopDelayMs = 1;
-        TickType_t sdMutexTimeout = pdMS_TO_TICKS(50);
     };
 
     using LogFn = void (*)(int level, const char* tag, const char* message);
 
-    bool begin(const Config& cfg, SemaphoreHandle_t sdMutex, bool& sdReady, LogFn logFn = nullptr);
+    bool begin(StorageManager& storage, const Config& cfg, LogFn logFn = nullptr);
     void setVolume(uint8_t volume);
 
     bool playFromSd(const char* path);
@@ -42,18 +38,12 @@ public:
 private:
     static void taskEntry(void* arg);
     void taskLoop();
-
-    bool sdFileExists(const char* path);
-    uint32_t sdFileSize(const char* path);
-    bool takeSdMutex();
-    void giveSdMutex();
     void logf(int level, const char* tag, const char* fmt, ...) const;
 
     Config _cfg{};
     LogFn _log = nullptr;
+    StorageManager* _storage = nullptr;
     Audio _audio;
-    SemaphoreHandle_t _sdMutex = nullptr;
-    bool* _sdReady = nullptr;
 
     TaskHandle_t _task = nullptr;
     volatile bool _playing = false;

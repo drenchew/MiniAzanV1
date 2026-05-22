@@ -2,14 +2,13 @@
 #include "WiFi.h"
 #include "time.h"
 #include <sys/time.h>
-#include "SD.h"
-#include "FS.h"
-#include "SPI.h"
 #include "AsyncTCP.h"
 #include "ESPAsyncWebServer.h"
 #include <nvs_flash.h>
 #include <nvs.h>
 #include <Wire.h>
+#include "SpiArchitecture.h"
+#include "StorageManager.h"
 #include "TimeManager.h"
 #include "AudioManager.h"
 
@@ -28,7 +27,6 @@ const char* ntpServer  = "pool.ntp.org";
 #define I2S_LRC        25
 #define I2S_BCLK       26
 #define I2S_DOUT       27  // <--- Changed to 27 to free up 22
-#define SD_CS          5
 #define WIFI_BUTTON_PIN 4
 
 #define DEFAULT_VOLUME 9
@@ -41,12 +39,11 @@ struct DayRecord {
 };
 
 TimeManager timeMgr;
+StorageManager storageMgr;
 AudioManager audioMgr;
 
 // Глобални обекти
 AsyncWebServer server(80);
-SemaphoreHandle_t spiMutex = NULL;
-bool sdCardInitialized = false;
 
 int timeOffsetMinutes = 0; 
 bool preFajrEnabled = false; 
@@ -149,6 +146,10 @@ void sysLogf(int level, const char* tag, const char* fmt, ...) {
 
 void moduleLog(int level, const char* tag, const char* message) {
     sysLog(level, tag, message);
+}
+
+static void debugSdLogLine(const char* line) {
+    sysLog(LOG_INFO, "DEBUG", line);
 }
 
 // --- NVS FUNCTIONS FOR PERSISTENT STORAGE ---
@@ -361,10 +362,8 @@ bool getDayRecordFromBin(int day, DayRecord &record);
 String minutesToTime(int totalMinutes);
 void printHealthStatus();
 int getTimeToNextPrayer();
-bool fileExists(const char* path);
-uint32_t getFileSize(const char* path);
 void playAudioFile(const char* filePath);
-bool deleteFile(const char* path);
+static void debugSdLogLine(const char* line);
 
 // --- SAFE WIFI TOGGLE FUNCTION ---
 void toggleWiFi() {
@@ -414,14 +413,8 @@ void setup() {
 
     pinMode(WIFI_BUTTON_PIN, INPUT_PULLUP);
 
-    spiMutex = xSemaphoreCreateMutex();
-    pinMode(SD_CS, OUTPUT);
-    digitalWrite(SD_CS, HIGH);
-    if (SD.begin(SD_CS)) {
-        sdCardInitialized = true;
-        sysLog(LOG_INFO, "SDCARD", "Initialization successful");
-    } else {
-        sysLog(LOG_ERROR, "SDCARD", "Initialization failed!");
+    if (!storageMgr.begin({}, moduleLog)) {
+        sysLog(LOG_ERROR, "STORAGE", "VSPI SD init failed");
     }
 
     Wire.begin();
@@ -467,7 +460,7 @@ void setup() {
     AudioManager::Config audioCfg;
     audioCfg.pins = {I2S_BCLK, I2S_LRC, I2S_DOUT};
     audioCfg.defaultVolume = currentVolume;
-    audioMgr.begin(audioCfg, spiMutex, sdCardInitialized, moduleLog);
+    audioMgr.begin(storageMgr, audioCfg, moduleLog);
     audioMgr.setVolume(currentVolume);
  
 
@@ -521,61 +514,26 @@ void setup() {
     server.on("/upload", HTTP_POST, [](AsyncWebServerRequest *request){
         request->send(200, "text/html", "<h3>✅ File uploaded successfully!</h3><a href='/'>Back</a>");
     }, [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final){
-        static File file;
-        if(!index){
-            file = SD.open("/" + filename, FILE_WRITE);
-            sysLogf(LOG_DEBUG, "UPLOAD", "Starting upload: %s", filename.c_str());
-        }
-        if(file && len > 0) {
-            // Lock ONLY for the actual write operation, then release immediately
-            if (spiMutex != NULL) xSemaphoreTake(spiMutex, portMAX_DELAY);
-            file.write(data, len);
-            if (spiMutex != NULL) xSemaphoreGive(spiMutex);
-        }
-        if(final){
-            if(file) {
-                if (spiMutex != NULL) xSemaphoreTake(spiMutex, portMAX_DELAY);
-                file.close();
-                if (spiMutex != NULL) xSemaphoreGive(spiMutex);
+        if (!index) {
+            if (!storageMgr.uploadBegin(filename.c_str())) {
+                sysLogf(LOG_WARN, "UPLOAD", "uploadBegin failed: %s", filename.c_str());
+            } else {
+                sysLogf(LOG_DEBUG, "UPLOAD", "Starting upload: %s", filename.c_str());
             }
+        }
+        if (len > 0) {
+            storageMgr.uploadWrite(data, len);
+        }
+        if (final) {
+            storageMgr.uploadEnd(true);
             sysLogf(LOG_INFO, "UPLOAD", "File upload completed: %s (%lu bytes total)", filename.c_str(), index + len);
         }
     });
     
     // --- LIST FILES API ---
     server.on("/list-files-api", HTTP_GET, [](AsyncWebServerRequest *request){
-        String json = "{\"files\":[";
-        
-        if (!sdCardInitialized) {
-            json += "]}";
-            request->send(200, "application/json", json);
-            return;
-        }
-        
-        if (spiMutex != NULL) xSemaphoreTake(spiMutex, portMAX_DELAY);
-        File root = SD.open("/");
-        if (!root) {
-            if (spiMutex != NULL) xSemaphoreGive(spiMutex);
-            json += "]}";
-            request->send(200, "application/json", json);
-            return;
-        }
-        
-        bool first = true;
-        File file = root.openNextFile();
-        while(file) {
-            if (!file.isDirectory()) {
-                if (!first) json += ",";
-                json += "{\"name\":\"" + String(file.name()) + "\",\"size\":" + String(file.size()) + "}";
-                first = false;
-            }
-            file.close();
-            file = root.openNextFile();
-        }
-        root.close();
-        if (spiMutex != NULL) xSemaphoreGive(spiMutex);
-        
-        json += "]}";
+        String json;
+        storageMgr.listRootFilesJson(json);
         sysLogf(LOG_DEBUG, "WEB", "Listed files - JSON size: %d bytes", json.length());
         request->send(200, "application/json", json);
     });
@@ -590,7 +548,7 @@ void setup() {
         String filename = request->getParam("name")->value();
         sysLogf(LOG_INFO, "WEB", "Delete requested: %s", filename.c_str());
         
-        if (deleteFile(filename.c_str())) {
+        if (storageMgr.removeFile(filename.c_str())) {
             sysLogf(LOG_INFO, "WEB", "File deleted: %s", filename.c_str());
             request->send(200, "application/json", "{\"success\":true}");
         } else {
@@ -835,42 +793,24 @@ void handleDebugConsole() {
         else if (input == "LISTFILES") {
             sysLog(LOG_INFO, "DEBUG", "Listing audio files and their status:");
             for (int i = 0; i < numAzanFiles; i++) {
-                bool exists = fileExists(azanFiles[i]);
-                uint32_t size = exists ? getFileSize(azanFiles[i]) : 0;
+                bool exists = storageMgr.fileExists(azanFiles[i]);
+                uint32_t size = exists ? storageMgr.fileSize(azanFiles[i]) : 0;
                 sysLogf(LOG_INFO, "DEBUG", "  [%d] %s -> Exists: %s | Size: %lu bytes", 
                        i, azanFiles[i], exists ? "YES" : "NO", size);
             }
         }
         else if (input == "SDLS") {
             sysLog(LOG_INFO, "DEBUG", "=== All files on SD card root: ===");
-            if (!sdCardInitialized) {
+            if (!storageMgr.isReady()) {
                 sysLog(LOG_ERROR, "DEBUG", "SD Card not initialized!");
                 return;
             }
-            
-            if (spiMutex != NULL) xSemaphoreTake(spiMutex, portMAX_DELAY);
-            File root = SD.open("/");
-            if (!root) {
-                sysLog(LOG_ERROR, "DEBUG", "Cannot open root directory");
-                if (spiMutex != NULL) xSemaphoreGive(spiMutex);
-                return;
+            int count = storageMgr.listRootFilesDebug(debugSdLogLine);
+            if (count < 0) {
+                sysLog(LOG_ERROR, "DEBUG", "Cannot list SD root (busy or error)");
+            } else {
+                sysLogf(LOG_INFO, "DEBUG", "Total files: %d", count);
             }
-            
-            File file = root.openNextFile();
-            int count = 0;
-            while(file) {
-                if (file.isDirectory()) {
-                    sysLogf(LOG_INFO, "DEBUG", "  [DIR] %s/", file.name());
-                } else {
-                    sysLogf(LOG_INFO, "DEBUG", "  [FILE] %s (%lu bytes)", file.name(), file.size());
-                    count++;
-                }
-                file.close();
-                file = root.openNextFile();
-            }
-            root.close();
-            if (spiMutex != NULL) xSemaphoreGive(spiMutex);
-            sysLogf(LOG_INFO, "DEBUG", "Total files: %d", count);
         }
         else if (input.startsWith("PLAYTEST:")) {
             String filename = input.substring(9);
@@ -930,7 +870,7 @@ void printStatus() {
     const char* clk = timeMgr.rtcUsable() ? "RTC" : (timeMgr.activeSource() == TimeManager::Source::Ntp ? "NTP" : "NONE");
     sysLogf(LOG_INFO, "STATUS", "Wi-Fi: %s | SD Card: %s | Audio: %s | Clock: %s", 
            wifiIsOn ? "ON" : "OFF", 
-           sdCardInitialized ? "OK" : "ERROR", 
+           storageMgr.isReady() ? "OK" : "ERROR", 
            isAudioPlaying ? "PLAYING" : "IDLE",
            clk);
     if (timeMgr.rtcBatterySuspect()) {
@@ -943,26 +883,8 @@ void printStatus() {
 }
 
 bool getDayRecordFromBin(int day, DayRecord &record) {
-    if (!sdCardInitialized) return false;
-    if (spiMutex != NULL) xSemaphoreTake(spiMutex, portMAX_DELAY);
-
-    File in = SD.open(DEFAULT_PRAYER_TIMES_FILE, FILE_READ);
-    if (!in) {
-        if (spiMutex != NULL) xSemaphoreGive(spiMutex);
-        return false;
-    }
-
-    if (!in.seek((day - 1) * BYTES_PER_DAY, SeekSet)) {
-        in.close();
-        if (spiMutex != NULL) xSemaphoreGive(spiMutex);
-        return false;
-    }
-
-    size_t bytesRead = in.read((uint8_t*)&record, sizeof(DayRecord));
-    in.close();
-    
-    if (spiMutex != NULL) xSemaphoreGive(spiMutex);
-    return (bytesRead == sizeof(DayRecord));
+    return storageMgr.readRecordAt(
+        DEFAULT_PRAYER_TIMES_FILE, day, &record, sizeof(DayRecord));
 }
 
 String minutesToTime(int totalMinutes) {
@@ -1006,7 +928,7 @@ void printHealthStatus() {
            "Heap: %lu/%lu (%u%%) | WiFi: %s (RSSI:%d)| SD: %s | File: %s",
            freeHeap, totalHeap, heapUsagePercent, 
            wifiStatus, rssi, audioStatus,       
-           sdCardInitialized ? "OK" : "FAIL",
+           storageMgr.isReady() ? "OK" : "FAIL",
            currentPlayingFile);
 }
 
@@ -1044,69 +966,6 @@ int getTimeToNextPrayer() {
     }
 
     return -1;
-}
-
-// --- AUDIO FILE DIAGNOSTICS ---
-bool fileExists(const char* path) {
-    if (!sdCardInitialized) {
-        sysLog(LOG_WARN, "FILEIO", "SD Card not initialized");
-        return false;
-    }
-    
-    if (spiMutex != NULL) xSemaphoreTake(spiMutex, portMAX_DELAY);
-    File file = SD.open(path, FILE_READ);
-    bool exists = file ? true : false;
-    if (file) file.close();
-    if (spiMutex != NULL) xSemaphoreGive(spiMutex);
-    
-    sysLogf(LOG_DEBUG, "FILEIO", "File exists check: %s -> %s", path, exists ? "YES" : "NO");
-    return exists;
-}
-
-uint32_t getFileSize(const char* path) {
-    if (!sdCardInitialized) return 0;
-    
-    if (spiMutex != NULL) xSemaphoreTake(spiMutex, portMAX_DELAY);
-    File file = SD.open(path, FILE_READ);
-    uint32_t size = file ? file.size() : 0;
-    if (file) file.close();
-    if (spiMutex != NULL) xSemaphoreGive(spiMutex);
-    
-    sysLogf(LOG_DEBUG, "FILEIO", "File size: %s -> %lu bytes", path, size);
-    return size;
-}
-
-// --- DELETE FILE FROM SD CARD ---
-bool deleteFile(const char* path) {
-    if (!sdCardInitialized) {
-        sysLog(LOG_WARN, "FILEIO", "SD Card not initialized");
-        return false;
-    }
-    
-    if (!path || strlen(path) == 0) {
-        sysLog(LOG_ERROR, "FILEIO", "Invalid file path for deletion");
-        return false;
-    }
-    
-    // Add leading slash if not present
-    String fullPath = path;
-    if (!fullPath.startsWith("/")) {
-        fullPath = "/" + fullPath;
-    }
-    
-    sysLogf(LOG_DEBUG, "FILEIO", "Attempting to delete: %s", fullPath.c_str());
-    
-    if (spiMutex != NULL) xSemaphoreTake(spiMutex, portMAX_DELAY);
-    bool result = SD.remove(fullPath.c_str());
-    if (spiMutex != NULL) xSemaphoreGive(spiMutex);
-    
-    if (result) {
-        sysLogf(LOG_INFO, "FILEIO", "File deleted successfully: %s", fullPath.c_str());
-    } else {
-        sysLogf(LOG_WARN, "FILEIO", "Failed to delete file: %s", fullPath.c_str());
-    }
-    
-    return result;
 }
 
 // --- WRAPPER TO PLAY AUDIO WITH DETAILED LOGGING ---
