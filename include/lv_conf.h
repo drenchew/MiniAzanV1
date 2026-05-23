@@ -29,6 +29,8 @@
 #define LV_USE_SLIDER   1
 #define LV_USE_LIST     1
 #define LV_USE_SWITCH   1
+#define LV_USE_BAR      1
+#define LV_USE_FLEX     1
 #define LV_USE_ARC      0
 #define LV_USE_CHART    0
 #define LV_USE_TABLE    0

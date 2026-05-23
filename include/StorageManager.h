@@ -46,7 +46,22 @@ public:
     bool uploadWrite(const uint8_t* data, size_t len);
     void uploadEnd(bool success);
 
+    struct DirEntry {
+        char name[48];
+        uint32_t size = 0;
+    };
+
     bool listRootFilesJson(String& jsonOut);
+    /** List files in a directory (e.g. /azan, /quran). Returns JSON {"files":[...]}. */
+    bool listDirectoryJson(const char* dirPath, String& jsonOut);
+
+    /**
+     * Low-stack directory listing for SDJob worker (no String/JSON).
+     * @return entries filled, or -1 on busy/lock failure
+     */
+    int listDirectoryPage(const char* dirPath, DirEntry* out, int maxEntries, int skip,
+                          int* totalOut);
+
     int listRootFilesDebug(void (*logLine)(const char* line));
 
 private:
@@ -54,6 +69,7 @@ private:
     void giveLock();
     void logf(int level, const char* tag, const char* fmt, ...) const;
     static String normalizePath(const char* path);
+    static void normalizePathTo(const char* path, char* out, size_t outLen);
 
     Config _cfg{};
     LogFn _log = nullptr;

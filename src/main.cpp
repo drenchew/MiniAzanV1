@@ -14,11 +14,17 @@
 #include "PrayerScheduler.h"
 #include "AudioManager.h"
 #include "AppTypes.h"
+#include "SettingsStore.h"
+#include "StorageJobQueue.h"
+#if !defined(MINI_AZAN_TOUCH_VALIDATION_MODE) || !MINI_AZAN_TOUCH_VALIDATION_MODE
 #include "ui/UiBridge.h"
 #include "ui/AppCoordinator.h"
 #include "UIManager.h"
 #if defined(MINI_AZAN_UI_ENABLE) && MINI_AZAN_UI_ENABLE
 #include "ui/UiPanel.h"
+#endif
+#else
+#include "ui/TouchValidationOverlay.h"
 #endif
 
 // --- LOG LEVEL DEFINITIONS ---
@@ -47,9 +53,16 @@ TimeManager timeMgr;
 StorageManager storageMgr;
 AudioManager audioMgr;
 PrayerScheduler prayerSched;
+SettingsStore settingsStore;
+StorageJobQueue storageJobs;
+
+#if !defined(MINI_AZAN_TOUCH_VALIDATION_MODE) || !MINI_AZAN_TOUCH_VALIDATION_MODE
 UiBridge uiBridge;
 AppCoordinator appCoord;
 UIManager uiMgr;
+#else
+TouchValidationOverlay touchOverlay;
+#endif
 
 // Глобални обекти
 AsyncWebServer server(80);
@@ -138,6 +151,10 @@ static void debugSdLogLine(const char* line) {
 
 static bool readDayRecordBridge(int day, DayRecord& out) {
     return getDayRecordFromBin(day, out);
+}
+
+static void saveWifiLastBridge(bool on) {
+    settingsStore.saveWifiLastState(on);
 }
 
 const char* activeAzanPath() {
@@ -444,6 +461,10 @@ void setup() {
     Serial.begin(115200);
     delay(1000);
     sysLog(LOG_INFO, "SYSTEM", "=== STARTING AZAN SYSTEM (AUTO WI-FI OFF MODE) ===");
+#if defined(MINI_AZAN_TOUCH_VALIDATION_MODE) && MINI_AZAN_TOUCH_VALIDATION_MODE
+    sysLog(APP_LOG_WARN, "TVAL",
+           "TFT CS=27 DC=25 — verify no pin clash with I2S (main uses 25/26/27)");
+#endif
 
     pinMode(WIFI_BUTTON_PIN, INPUT_PULLUP);
 
@@ -481,8 +502,13 @@ void setup() {
     }
     ESP_ERROR_CHECK(ret);
     
+    settingsStore.begin();
     currentVolume = loadVolumeFromNVS();
     loadUiPrefsFromNVS();
+    bool wifiLast = true;
+    if (settingsStore.loadWifiLastState(wifiLast, wifiIsOn)) {
+        wifiIsOn = wifiLast;
+    }
 
     TimeManager::Config tmCfg;
     tmCfg.ntpServer = ntpServer;
@@ -515,6 +541,7 @@ void setup() {
     audioMgr.begin(storageMgr, audioCfg, moduleLog);
     audioMgr.setVolume(currentVolume);
 
+#if !defined(MINI_AZAN_TOUCH_VALIDATION_MODE) || !MINI_AZAN_TOUCH_VALIDATION_MODE
     uiBridge.begin();
     AppServices svc{};
     svc.audio = &audioMgr;
@@ -534,11 +561,14 @@ void setup() {
     svc.cachedPrayerTimes = &cachedPrayerTimes;
     svc.cachedPrayerDay = &cachedPrayerDay;
     svc.cachedPrayerTimesValid = &cachedPrayerTimesValid;
+    svc.storageJobs = &storageJobs;
     svc.toggleWifi = toggleWiFi;
+    svc.playFile = playAudioFile;
     svc.saveVolumeToNvs = saveVolumeToNVS;
     svc.savePreFajrToNvs = savePreFajrToNVS;
     svc.saveAzanIndexToNvs = saveAzanIndexToNVS;
     svc.saveAzanPathToNvs = saveAzanPathToNVS;
+    svc.saveWifiLastToNvs = saveWifiLastBridge;
     svc.uiSelectedAzanPath = uiSelectedAzan;
     svc.uiSelectedAzanPathSize = sizeof(uiSelectedAzan);
     svc.readDayRecord = readDayRecordBridge;
@@ -546,6 +576,13 @@ void setup() {
     if (uiMgr.begin(uiBridge)) {
         sysLog(LOG_INFO, "UI", "LVGL UI enabled");
     }
+#else
+    if (!touchOverlay.begin()) {
+        sysLog(LOG_ERROR, "TVAL", "Touch validation overlay failed");
+    } else {
+        sysLog(LOG_INFO, "TVAL", "Touch validation active — audio/RTC/SD/WiFi running");
+    }
+#endif
 
     // Регистрираме рутовете само веднъж тук
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){ request->send_P(200, "text/html", index_html); });
@@ -647,9 +684,14 @@ void setup() {
 
 void loop() {
     timeMgr.update();
+#if !defined(MINI_AZAN_TOUCH_VALIDATION_MODE) || !MINI_AZAN_TOUCH_VALIDATION_MODE
     appCoord.poll();
     uiMgr.poll();
-    handleDebugConsole(); 
+#endif
+    handleDebugConsole();
+#if defined(MINI_AZAN_TOUCH_VALIDATION_MODE) && MINI_AZAN_TOUCH_VALIDATION_MODE
+    touchOverlay.update();
+#endif 
     
     // --- HARDWARE BUTTON CHECK FOR WI-FI ---
     if (digitalRead(WIFI_BUTTON_PIN) == LOW) {
@@ -773,7 +815,12 @@ void handleDebugConsole() {
         else if (input == "CLKDIAG") {
             timeMgr.update();
         }
-#if defined(MINI_AZAN_UI_ENABLE) && MINI_AZAN_UI_ENABLE
+#if defined(MINI_AZAN_TOUCH_VALIDATION_MODE) && MINI_AZAN_TOUCH_VALIDATION_MODE
+        else if (input == "clear") {
+            touchOverlay.begin();
+            appLog(APP_LOG_INFO, "TVAL", "screen cleared");
+        }
+#elif defined(MINI_AZAN_UI_ENABLE) && MINI_AZAN_UI_ENABLE
         else if (input == "TOUCHDBG") {
             UiPanel::instance().runTouchDiagnostics();
         }

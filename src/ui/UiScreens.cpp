@@ -1,4 +1,5 @@
 #include "ui/UiScreens.h"
+#include "ui/UiTheme.h"
 #include "UIManager.h"
 
 #if defined(MINI_AZAN_UI_ENABLE) && MINI_AZAN_UI_ENABLE
@@ -11,75 +12,53 @@ static void bridgePost(UiBridge* b, UiCommand cmd, bool urgent = false) {
     else b->postCommand(cmd, 0);
 }
 
+static uintptr_t btnTag(uint8_t op, uint8_t arg = 0, uint8_t arg2 = 0) {
+    return ((uintptr_t)op << 24) | ((uintptr_t)arg << 16) | ((uintptr_t)arg2 << 8);
+}
+
+void UiScreens::lvCbNav(lv_event_t* e) {
+    if (lv_event_get_code(e) != LV_EVENT_CLICKED || !g_active) return;
+    UiScreenId id = (UiScreenId)(uintptr_t)lv_event_get_user_data(e);
+    g_active->show(id);
+}
+
 void UiScreens::lvCbBtn(lv_event_t* e) {
     if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
     uintptr_t tag = (uintptr_t)lv_event_get_user_data(e);
     if (!g_active || !g_active->_bridge) return;
     UiBridge* b = g_active->_bridge;
-
     uint8_t op = (uint8_t)(tag >> 24);
-    uint8_t arg = (uint8_t)((tag >> 16) & 0xFF);
 
-    switch (op) {
-        case 1: { // nav
-            UiCommand c{};
-            c.cmd = UiCmd::Navigate;
-            c.nav.screen = (UiScreenId)arg;
-            c.nav.pushStack = true;
-            bridgePost(b, c);
-            g_active->show((UiScreenId)arg);
-            break;
-        }
-        case 2: // stop
-            UIManager::requestStopAzan(*b);
-            break;
-        case 3: { // toggle wifi
-            UiCommand c{};
-            c.cmd = UiCmd::ToggleWifi;
-            bridgePost(b, c);
-            break;
-        }
-        case 4: { // back
-            if (g_active->_nav && g_active->_nav->pop()) {
-                g_active->show(g_active->_nav->current());
-            }
-            break;
-        }
-        case 5: { // list audio
-            UiCommand c{};
-            c.cmd = UiCmd::ListAudioFiles;
-            bridgePost(b, c);
-            break;
-        }
-        case 6: { // list all files
-            UiCommand c{};
-            c.cmd = UiCmd::RefreshFileList;
-            bridgePost(b, c);
-            break;
-        }
-        case 7: { // refresh wifi status
-            UiCommand c{};
-            c.cmd = UiCmd::RequestWifiStatus;
-            bridgePost(b, c);
-            break;
-        }
-        default:
-            break;
+    if (op == 2) {
+        UIManager::requestStopAzan(*b);
+        return;
     }
-}
-
-static uintptr_t btnTag(uint8_t op, uint8_t arg = 0) {
-    return ((uintptr_t)op << 24) | ((uintptr_t)arg << 16);
-}
-
-static lv_obj_t* makeBtn(lv_obj_t* parent, const char* txt, uintptr_t tag) {
-    lv_obj_t* b = lv_btn_create(parent);
-    lv_obj_set_width(b, lv_pct(100));
-    lv_obj_add_event_cb(b, UiScreens::lvCbBtn, LV_EVENT_CLICKED, (void*)tag);
-    lv_obj_t* l = lv_label_create(b);
-    lv_label_set_text(l, txt);
-    lv_obj_center(l);
-    return b;
+    if (op == 3) {
+        UiCommand c{};
+        c.cmd = UiCmd::ToggleWifi;
+        bridgePost(b, c);
+        return;
+    }
+    if (op == 10) {
+        UiCommand c{};
+        c.cmd = UiCmd::ListFolder;
+        strncpy(c.list.path, "/azan", sizeof(c.list.path) - 1);
+        strncpy(g_active->_listFolder, "/azan", sizeof(g_active->_listFolder) - 1);
+        bridgePost(b, c);
+        return;
+    }
+    if (op == 11) {
+        UiCommand c{};
+        c.cmd = UiCmd::ListFolder;
+        strncpy(c.list.path, "/quran", sizeof(c.list.path) - 1);
+        strncpy(g_active->_listFolder, "/quran", sizeof(g_active->_listFolder) - 1);
+        bridgePost(b, c);
+        return;
+    }
+    if (op == 12) {
+        g_active->show(UiScreenId::QuranPlayer);
+        return;
+    }
 }
 
 void UiScreens::begin(UiBridge& bridge, UiScreenMachine& nav) {
@@ -88,278 +67,477 @@ void UiScreens::begin(UiBridge& bridge, UiScreenMachine& nav) {
     g_active = this;
 
     _root = lv_obj_create(nullptr);
-    lv_obj_set_style_bg_color(_root, lv_color_hex(0x1a252f), 0);
+    UiTheme::styleScreen(_root);
+    lv_obj_set_size(_root, 240, 320);
 
-    _header = lv_obj_create(_root);
-    lv_obj_set_size(_header, lv_pct(100), 36);
-    lv_obj_align(_header, LV_ALIGN_TOP_MID, 0, 0);
-    lv_obj_set_style_bg_color(_header, lv_color_hex(0x2c3e50), 0);
+    _statusBar = UiComponents::createStatusBar(_root, 240);
+    _bottomNav = UiComponents::createBottomNav(_root, UiScreenId::Home, lvCbNav);
 
-    _content = lv_obj_create(_root);
-    lv_obj_set_size(_content, lv_pct(100), lv_pct(100));
-    lv_obj_align(_content, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_set_y(_content, 36);
-    lv_obj_set_height(_content, lv_obj_get_height(_root) - 36);
-    lv_obj_set_style_pad_all(_content, 6, 0);
+    lv_coord_t contentH = 320 - UiTheme::kStatusH - UiTheme::kNavH;
+    _contentArea = lv_obj_create(_root);
+    lv_obj_set_pos(_contentArea, 0, UiTheme::kStatusH);
+    lv_obj_set_size(_contentArea, 240, contentH);
+    lv_obj_set_style_bg_opa(_contentArea, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(_contentArea, 0, 0);
+    lv_obj_set_style_pad_all(_contentArea, 0, 0);
 
     lv_scr_load(_root);
     show(UiScreenId::Home);
 
     UiCommand c{};
+    c.cmd = UiCmd::RequestSystemStatus;
+    bridgePost(_bridge, c);
     c.cmd = UiCmd::RequestClock;
     bridgePost(_bridge, c);
     c.cmd = UiCmd::RequestPrayerTimes;
     bridgePost(_bridge, c);
-    c.cmd = UiCmd::RequestWifiStatus;
-    bridgePost(_bridge, c);
-}
-
-void UiScreens::postNav(UiScreenId id, bool push) {
-    if (push && _nav) _nav->push(id);
-    show(id);
 }
 
 void UiScreens::sendCmd(UiCommand cmd, bool urgent) {
     bridgePost(_bridge, cmd, urgent);
 }
 
-void UiScreens::clearContent() {
-    lv_obj_clean(_content);
-    _lblClock = nullptr;
-    _lblPrayer = nullptr;
-    _lblStatus = nullptr;
-    _sliderVol = nullptr;
-    _swPreFajr = nullptr;
-    _listFiles = nullptr;
-    _swWifi = nullptr;
+void UiScreens::show(UiScreenId id) {
+    _screen = id;
+    if (_nav) _nav->replace(id);
+    rebuildShell(id);
+    UiComponents::highlightNav(_bottomNav, id);
+    requestDataForScreen(id);
 }
 
-void UiScreens::show(UiScreenId id) {
-    if (_nav) _nav->replace(id);
-    lv_obj_clean(_header);
-    clearContent();
+void UiScreens::rebuildShell(UiScreenId id) {
+    lv_obj_clean(_contentArea);
+    _lblClock = _lblDate = _lblPrayerNow = _lblNextPrayer = nullptr;
+    _barProgress = _sliderVol = _swPreFajr = _listFiles = _swWifi = _lblSystem = _scroll = nullptr;
+    _filePathCount = 0;
+    for (int i = 0; i < 5; i++) {
+        _prayerCards[i] = nullptr;
+        _prayerTimeLabels[i] = nullptr;
+    }
+
     switch (id) {
-        case UiScreenId::Home: buildHome(); break;
-        case UiScreenId::Wifi: buildWifi(); break;
-        case UiScreenId::Volume: buildVolume(); break;
-        case UiScreenId::AzanSelect: buildAzan(); break;
-        case UiScreenId::PreFajr: buildPreFajr(); break;
-        case UiScreenId::Files: buildFiles(); break;
-        default: buildHome(); break;
+        case UiScreenId::Home: buildHome(_contentArea); break;
+        case UiScreenId::PrayerTimes: buildPrayerTimes(_contentArea); break;
+        case UiScreenId::AzanSettings: buildAzanSettings(_contentArea); break;
+        case UiScreenId::FileManager: buildFileManager(_contentArea); break;
+        case UiScreenId::QuranPlayer: buildQuranPlayer(_contentArea); break;
+        case UiScreenId::System: buildSystem(_contentArea); break;
+        default: buildHome(_contentArea); break;
     }
 }
 
-void UiScreens::buildHome() {
-    lv_obj_t* t = lv_label_create(_header);
-    lv_label_set_text(t, "Mini Azan");
-    lv_obj_center(t);
-
-    _lblClock = lv_label_create(_content);
-    lv_label_set_text(_lblClock, "--:--:--");
-    lv_obj_set_style_text_font(_lblClock, &lv_font_montserrat_20, 0);
-
-    _lblPrayer = lv_label_create(_content);
-    lv_label_set_text(_lblPrayer, "Prayer: loading...");
-    lv_obj_align(_lblPrayer, LV_ALIGN_TOP_LEFT, 0, 36);
-
-    _lblStatus = lv_label_create(_content);
-    lv_label_set_text(_lblStatus, "WiFi: ?  Audio: ?");
-    lv_obj_align(_lblStatus, LV_ALIGN_TOP_LEFT, 0, 60);
-
-    lv_obj_t* stop = lv_btn_create(_content);
-    lv_obj_set_size(stop, lv_pct(100), 44);
-    lv_obj_align(stop, LV_ALIGN_TOP_MID, 0, 88);
-    lv_obj_set_style_bg_color(stop, lv_color_hex(0xc0392b), 0);
-    lv_obj_add_event_cb(stop, lvCbBtn, LV_EVENT_CLICKED, (void*)btnTag(2));
-    lv_obj_t* sl = lv_label_create(stop);
-    lv_label_set_text(sl, "STOP AZAN");
-    lv_obj_center(sl);
-
-    makeBtn(_content, "WiFi", btnTag(1, (uint8_t)UiScreenId::Wifi));
-    lv_obj_align(lv_obj_get_child(_content, -1), LV_ALIGN_TOP_MID, 0, 140);
-    makeBtn(_content, "Volume", btnTag(1, (uint8_t)UiScreenId::Volume));
-    makeBtn(_content, "Azan File", btnTag(1, (uint8_t)UiScreenId::AzanSelect));
-    makeBtn(_content, "Pre-Fajr", btnTag(1, (uint8_t)UiScreenId::PreFajr));
-    makeBtn(_content, "Files", btnTag(1, (uint8_t)UiScreenId::Files));
+void UiScreens::requestDataForScreen(UiScreenId id) {
+    UiCommand c{};
+    switch (id) {
+        case UiScreenId::Home:
+            c.cmd = UiCmd::RequestClock;
+            sendCmd(c);
+            c.cmd = UiCmd::RequestPrayerTimes;
+            sendCmd(c);
+            break;
+        case UiScreenId::PrayerTimes:
+            c.cmd = UiCmd::RequestPrayerTimes;
+            sendCmd(c);
+            break;
+        case UiScreenId::AzanSettings:
+            c.cmd = UiCmd::ListAudioFiles;
+            sendCmd(c);
+            c.cmd = UiCmd::RequestSystemStatus;
+            sendCmd(c);
+            break;
+        case UiScreenId::FileManager:
+            c.cmd = UiCmd::ListFolder;
+            strncpy(c.list.path, _listFolder, sizeof(c.list.path) - 1);
+            sendCmd(c);
+            break;
+        case UiScreenId::QuranPlayer:
+            c.cmd = UiCmd::ListFolder;
+            strncpy(c.list.path, "/quran", sizeof(c.list.path) - 1);
+            sendCmd(c);
+            break;
+        case UiScreenId::System:
+            c.cmd = UiCmd::RequestWifiStatus;
+            sendCmd(c);
+            c.cmd = UiCmd::RequestSystemStatus;
+            sendCmd(c);
+            break;
+        default: break;
+    }
 }
 
-void UiScreens::buildWifi() {
-    lv_obj_t* t = lv_label_create(_header);
-    lv_label_set_text(t, "WiFi");
-    lv_obj_center(t);
-    makeBtn(_header, "<", btnTag(4));
-    lv_obj_set_size(lv_obj_get_child(_header, 1), 40, 30);
-    lv_obj_align(lv_obj_get_child(_header, 1), LV_ALIGN_LEFT_MID, 4, 0);
+void UiScreens::formatCountdown(char* buf, size_t len, int seconds) {
+    if (seconds < 0) {
+        snprintf(buf, len, "--:--:--");
+        return;
+    }
+    int h = seconds / 3600;
+    int m = (seconds % 3600) / 60;
+    int s = seconds % 60;
+    snprintf(buf, len, "%02d:%02d:%02d", h, m, s);
+}
 
-    _lblStatus = lv_label_create(_content);
-    lv_label_set_text(_lblStatus, "Status: ...");
+void UiScreens::buildHome(lv_obj_t* area) {
+    lv_obj_t* hdr = lv_obj_create(area);
+    lv_obj_set_size(hdr, lv_pct(100), 100);
+    lv_obj_align(hdr, LV_ALIGN_TOP_MID, 0, 0);
+    UiTheme::styleHeaderGradient(hdr);
+    lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
 
-    _swWifi = lv_switch_create(_content);
-    lv_obj_align(_swWifi, LV_ALIGN_TOP_LEFT, 0, 40);
+    _lblClock = lv_label_create(hdr);
+    lv_label_set_text(_lblClock, "--:--");
+    lv_obj_set_style_text_font(_lblClock, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(_lblClock, UiTheme::kText(), 0);
+    lv_obj_align(_lblClock, LV_ALIGN_TOP_MID, 0, 12);
+
+    _lblDate = lv_label_create(hdr);
+    lv_label_set_text(_lblDate, "----/--/--");
+    lv_obj_set_style_text_color(_lblDate, UiTheme::kMuted(), 0);
+    lv_obj_align(_lblDate, LV_ALIGN_TOP_MID, 0, 40);
+
+    lv_obj_t* card = UiComponents::createCard(area, 224, 100);
+    lv_obj_align(card, LV_ALIGN_TOP_MID, 0, 108);
+
+    _lblPrayerNow = lv_label_create(card);
+    lv_label_set_text(_lblPrayerNow, "Loading...");
+    lv_obj_set_style_text_color(_lblPrayerNow, UiTheme::kAccent(), 0);
+
+    _lblNextPrayer = lv_label_create(card);
+    lv_label_set_text(_lblNextPrayer, "Next: --");
+    lv_obj_align(_lblNextPrayer, LV_ALIGN_TOP_LEFT, 0, 28);
+    lv_obj_set_style_text_color(_lblNextPrayer, UiTheme::kText(), 0);
+
+    _barProgress = lv_bar_create(card);
+    lv_obj_set_size(_barProgress, 200, 10);
+    lv_obj_align(_barProgress, LV_ALIGN_BOTTOM_MID, 0, -4);
+    lv_bar_set_range(_barProgress, 0, 100);
+    lv_obj_set_style_bg_color(_barProgress, UiTheme::kSurface(), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(_barProgress, UiTheme::kPrimary(), LV_PART_INDICATOR);
+
+    lv_obj_t* stop = lv_btn_create(area);
+    lv_obj_set_size(stop, 224, 40);
+    lv_obj_align(stop, LV_ALIGN_BOTTOM_MID, 0, -4);
+    lv_obj_set_style_bg_color(stop, UiTheme::kDanger(), 0);
+    lv_obj_add_event_cb(stop, lvCbBtn, LV_EVENT_CLICKED, (void*)btnTag(2));
+    lv_obj_t* sl = lv_label_create(stop);
+    lv_label_set_text(sl, LV_SYMBOL_STOP " STOP AZAN");
+    lv_obj_center(sl);
+}
+
+static const char* kPrayerLabels[] = {"Fajr", "Sunrise", "Dhuhr", "Asr", "Maghrib", "Isha"};
+static const int kPrayerDisplayIdx[] = {0, 2, 3, 4, 5};
+
+void UiScreens::buildPrayerTimes(lv_obj_t* area) {
+    _scroll = UiComponents::createScrollContent(area, 0, lv_obj_get_height(area));
+    lv_obj_t* title = lv_label_create(_scroll);
+    lv_label_set_text(title, "Prayer Times");
+    lv_obj_set_style_text_color(title, UiTheme::kText(), 0);
+
+    for (int k = 0; k < 5; k++) {
+        int idx = kPrayerDisplayIdx[k];
+        lv_obj_t* card = UiComponents::createCard(_scroll, 216, 52);
+        _prayerCards[k] = card;
+        lv_obj_t* nm = lv_label_create(card);
+        lv_label_set_text(nm, kPrayerLabels[idx]);
+        lv_obj_set_style_text_color(nm, UiTheme::kText(), 0);
+        lv_obj_t* tm = lv_label_create(card);
+        lv_label_set_text(tm, "--:--");
+        lv_obj_align(tm, LV_ALIGN_TOP_RIGHT, 0, 0);
+        _prayerTimeLabels[k] = tm;
+    }
+
+    lv_obj_t* ref = lv_btn_create(_scroll);
+    lv_obj_set_width(ref, 216);
+    lv_obj_add_event_cb(ref, [](lv_event_t*) {
+        if (!g_active) return;
+        UiCommand c{};
+        c.cmd = UiCmd::RequestPrayerTimes;
+        g_active->sendCmd(c);
+    }, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t* rl = lv_label_create(ref);
+    lv_label_set_text(rl, LV_SYMBOL_REFRESH " Refresh");
+    lv_obj_center(rl);
+}
+
+void UiScreens::buildAzanSettings(lv_obj_t* area) {
+    _scroll = UiComponents::createScrollContent(area, 0, lv_obj_get_height(area));
+
+    lv_obj_t* card1 = UiComponents::createCard(_scroll, 216, 70);
+    lv_obj_t* pl = lv_label_create(card1);
+    lv_label_set_text(pl, "Pre-Fajr alarm");
+    _swPreFajr = lv_switch_create(card1);
+    lv_obj_align(_swPreFajr, LV_ALIGN_TOP_RIGHT, 0, 0);
+    lv_obj_add_event_cb(_swPreFajr, [](lv_event_t* e) {
+        if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED || !g_active) return;
+        UiCommand c{};
+        c.cmd = UiCmd::SetPreFajr;
+        c.pf.enabled = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+        g_active->sendCmd(c);
+    }, LV_EVENT_VALUE_CHANGED, nullptr);
+
+    lv_obj_t* card2 = UiComponents::createCard(_scroll, 216, 80);
+    lv_label_set_text(lv_label_create(card2), "Volume");
+    _sliderVol = lv_slider_create(card2);
+    lv_slider_set_range(_sliderVol, 0, 100);
+    lv_obj_set_width(_sliderVol, 190);
+    lv_obj_align(_sliderVol, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_add_event_cb(_sliderVol, [](lv_event_t* e) {
+        if (lv_event_get_code(e) != LV_EVENT_RELEASED || !g_active) return;
+        UiCommand c{};
+        c.cmd = UiCmd::SetVolume;
+        c.vol.volumePct = (uint8_t)lv_slider_get_value(lv_event_get_target(e));
+        g_active->sendCmd(c);
+    }, LV_EVENT_RELEASED, nullptr);
+
+    lv_obj_t* card3 = UiComponents::createCard(_scroll, 216, 120);
+    lv_label_set_text(lv_label_create(card3), "Default Azan (SD /azan)");
+    _listFiles = lv_list_create(card3);
+    lv_obj_set_size(_listFiles, 200, 88);
+    lv_obj_align(_listFiles, LV_ALIGN_BOTTOM_MID, 0, 0);
+}
+
+void UiScreens::buildFileManager(lv_obj_t* area) {
+    lv_obj_t* tabs = lv_obj_create(area);
+    lv_obj_set_size(tabs, lv_pct(100), 36);
+    lv_obj_align(tabs, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_bg_opa(tabs, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(tabs, 0, 0);
+    lv_obj_set_flex_flow(tabs, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(tabs, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t* ba = lv_btn_create(tabs);
+    lv_label_set_text(lv_label_create(ba), "/azan");
+    lv_obj_center(lv_obj_get_child(ba, 0));
+    lv_obj_add_event_cb(ba, lvCbBtn, LV_EVENT_CLICKED, (void*)btnTag(10));
+
+    lv_obj_t* bq = lv_btn_create(tabs);
+    lv_label_set_text(lv_label_create(bq), "/quran");
+    lv_obj_center(lv_obj_get_child(bq, 0));
+    lv_obj_add_event_cb(bq, lvCbBtn, LV_EVENT_CLICKED, (void*)btnTag(11));
+
+    lv_obj_t* bp = lv_btn_create(tabs);
+    lv_label_set_text(lv_label_create(bp), "Player");
+    lv_obj_center(lv_obj_get_child(bp, 0));
+    lv_obj_add_event_cb(bp, lvCbBtn, LV_EVENT_CLICKED, (void*)btnTag(12));
+
+    _listFiles = lv_list_create(area);
+    lv_obj_set_size(_listFiles, lv_pct(100), lv_obj_get_height(area) - 40);
+    lv_obj_align(_listFiles, LV_ALIGN_BOTTOM_MID, 0, 0);
+}
+
+void UiScreens::buildQuranPlayer(lv_obj_t* area) {
+    lv_obj_t* title = lv_label_create(area);
+    lv_label_set_text(title, "Quran Player");
+    lv_obj_set_style_text_color(title, UiTheme::kText(), 0);
+
+    _listFiles = lv_list_create(area);
+    lv_obj_set_size(_listFiles, lv_pct(100), lv_obj_get_height(area) - 70);
+    lv_obj_align(_listFiles, LV_ALIGN_BOTTOM_MID, 0, -44);
+
+    lv_obj_t* row = lv_obj_create(area);
+    lv_obj_set_size(row, lv_pct(100), 40);
+    lv_obj_align(row, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t* stop = lv_btn_create(row);
+    lv_obj_add_event_cb(stop, lvCbBtn, LV_EVENT_CLICKED, (void*)btnTag(2));
+    lv_label_set_text(lv_label_create(stop), LV_SYMBOL_STOP);
+    lv_obj_center(lv_obj_get_child(stop, 0));
+}
+
+void UiScreens::buildSystem(lv_obj_t* area) {
+    _scroll = UiComponents::createScrollContent(area, 0, lv_obj_get_height(area));
+
+    lv_obj_t* card = UiComponents::createCard(_scroll, 216, 140);
+    _lblSystem = lv_label_create(card);
+    lv_label_set_text(_lblSystem, "Loading...");
+    lv_label_set_long_mode(_lblSystem, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(_lblSystem, 200);
+
+    _swWifi = lv_switch_create(card);
+    lv_obj_align(_swWifi, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
     lv_obj_add_event_cb(_swWifi, [](lv_event_t* e) {
         if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
         UiCommand c{};
         c.cmd = UiCmd::ToggleWifi;
-        if (g_active && g_active->_bridge) bridgePost(g_active->_bridge, c);
-    }, LV_EVENT_VALUE_CHANGED, nullptr);
-
-    makeBtn(_content, "Refresh", btnTag(7));
-}
-
-void UiScreens::buildVolume() {
-    lv_obj_t* t = lv_label_create(_header);
-    lv_label_set_text(t, "Volume");
-    lv_obj_center(t);
-    makeBtn(_header, "<", btnTag(4));
-    lv_obj_set_size(lv_obj_get_child(_header, 1), 40, 30);
-    lv_obj_align(lv_obj_get_child(_header, 1), LV_ALIGN_LEFT_MID, 4, 0);
-
-    _sliderVol = lv_slider_create(_content);
-    lv_slider_set_range(_sliderVol, 0, 21);
-    lv_obj_set_width(_sliderVol, lv_pct(100));
-    lv_obj_add_event_cb(_sliderVol, [](lv_event_t* e) {
-        if (lv_event_get_code(e) != LV_EVENT_RELEASED) return;
-        lv_obj_t* s = lv_event_get_target(e);
-        UiCommand c{};
-        c.cmd = UiCmd::SetVolume;
-        c.vol.volume = (uint8_t)lv_slider_get_value(s);
-        if (g_active && g_active->_bridge) bridgePost(g_active->_bridge, c);
-    }, LV_EVENT_RELEASED, nullptr);
-}
-
-void UiScreens::buildAzan() {
-    lv_obj_t* t = lv_label_create(_header);
-    lv_label_set_text(t, "Azan");
-    lv_obj_center(t);
-    makeBtn(_header, "<", btnTag(4));
-    lv_obj_set_size(lv_obj_get_child(_header, 1), 40, 30);
-    lv_obj_align(lv_obj_get_child(_header, 1), LV_ALIGN_LEFT_MID, 4, 0);
-
-    _listFiles = lv_list_create(_content);
-    lv_obj_set_size(_listFiles, lv_pct(100), lv_pct(100));
-    UiCommand c{};
-    c.cmd = UiCmd::ListAudioFiles;
-    bridgePost(_bridge, c);
-}
-
-void UiScreens::buildPreFajr() {
-    lv_obj_t* t = lv_label_create(_header);
-    lv_label_set_text(t, "Pre-Fajr");
-    lv_obj_center(t);
-    makeBtn(_header, "<", btnTag(4));
-    lv_obj_set_size(lv_obj_get_child(_header, 1), 40, 30);
-    lv_obj_align(lv_obj_get_child(_header, 1), LV_ALIGN_LEFT_MID, 4, 0);
-
-    _swPreFajr = lv_switch_create(_content);
-    lv_obj_align(_swPreFajr, LV_ALIGN_TOP_LEFT, 0, 8);
-    lv_obj_add_event_cb(_swPreFajr, [](lv_event_t* e) {
-        if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
-        UiCommand c{};
-        c.cmd = UiCmd::SetPreFajr;
-        c.pf.enabled = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
-        if (g_active && g_active->_bridge) bridgePost(g_active->_bridge, c);
+        if (g_active) g_active->sendCmd(c);
     }, LV_EVENT_VALUE_CHANGED, nullptr);
 }
 
-void UiScreens::buildFiles() {
-    lv_obj_t* t = lv_label_create(_header);
-    lv_label_set_text(t, "Files");
-    lv_obj_center(t);
-    makeBtn(_header, "<", btnTag(4));
-    lv_obj_set_size(lv_obj_get_child(_header, 1), 40, 30);
-    lv_obj_align(lv_obj_get_child(_header, 1), LV_ALIGN_LEFT_MID, 4, 0);
+void UiScreens::populateFileList(const UiEventPayload& ev) {
+    if (!_listFiles) return;
+    lv_obj_clean(_listFiles);
+    _filePathCount = ev.fileCount > 16 ? 16 : ev.fileCount;
 
-    _listFiles = lv_list_create(_content);
-    lv_obj_set_size(_listFiles, lv_pct(100), lv_pct(100));
-    UiCommand c{};
-    c.cmd = UiCmd::RefreshFileList;
-    bridgePost(_bridge, c);
+    const char* folder = ev.listFolder[0] ? ev.listFolder : _listFolder;
+
+    for (uint8_t i = 0; i < _filePathCount; i++) {
+        if (folder[0] == '/' && folder[1]) {
+            snprintf(_filePaths[i], sizeof(_filePaths[i]), "%s/%s", folder, ev.files[i].name);
+        } else {
+            snprintf(_filePaths[i], sizeof(_filePaths[i]), "/%s", ev.files[i].name);
+        }
+
+        lv_obj_t* btn = lv_list_add_btn(_listFiles, LV_SYMBOL_AUDIO, ev.files[i].name);
+        lv_obj_add_event_cb(btn, [](lv_event_t* e) {
+            if (lv_event_get_code(e) != LV_EVENT_CLICKED || !g_active) return;
+            int idx = (int)(intptr_t)lv_event_get_user_data(e);
+            if (idx < 0 || idx >= g_active->_filePathCount) return;
+            UiCommand c{};
+            if (g_active->_screen == UiScreenId::AzanSettings) {
+                c.cmd = UiCmd::SelectAzanFile;
+                strncpy(c.azanPath.path, g_active->_filePaths[idx], sizeof(c.azanPath.path) - 1);
+            } else {
+                c.cmd = UiCmd::PlayFile;
+                strncpy(c.play.path, g_active->_filePaths[idx], sizeof(c.play.path) - 1);
+            }
+            g_active->sendCmd(c);
+        }, LV_EVENT_CLICKED, (void*)(intptr_t)i);
+
+        if (_screen == UiScreenId::FileManager) {
+            lv_obj_add_event_cb(btn, [](lv_event_t* e) {
+                if (lv_event_get_code(e) != LV_EVENT_LONG_PRESSED || !g_active) return;
+                int idx = (int)(intptr_t)lv_event_get_user_data(e);
+                if (idx < 0 || idx >= g_active->_filePathCount) return;
+                strncpy(g_active->_pendingDelete, g_active->_filePaths[idx],
+                        sizeof(g_active->_pendingDelete) - 1);
+                UiComponents::showConfirmDialog(g_active->_root, "Delete file?",
+                                                g_active->_pendingDelete,
+                                                [](lv_event_t* ev) {
+                    if (!g_active) return;
+                    UiCommand c{};
+                    c.cmd = UiCmd::DeleteFile;
+                    strncpy(c.del.path, g_active->_pendingDelete, sizeof(c.del.path) - 1);
+                    g_active->sendCmd(c);
+                    UiComponents::dismissDialog(lv_obj_get_parent(lv_obj_get_parent(
+                        lv_event_get_target(ev))));
+                }, nullptr);
+            }, LV_EVENT_LONG_PRESSED, (void*)(intptr_t)i);
+        }
+    }
 }
 
 void UiScreens::onEvent(const UiEventPayload& ev) {
-    char buf[96];
+    char buf[80];
+    UiComponents::updateStatusBar(_statusBar, ev);
+
     switch (ev.type) {
         case UiEvent::ClockUpdate:
+            _lastClock = ev;
             if (_lblClock) {
-                snprintf(buf, sizeof(buf), "%02d:%02d:%02d  [%s]", ev.hour, ev.minute, ev.second, ev.clockSource);
+                snprintf(buf, sizeof(buf), "%02d:%02d:%02d", ev.hour, ev.minute, ev.second);
                 lv_label_set_text(_lblClock, buf);
             }
+            if (_lblDate) {
+                snprintf(buf, sizeof(buf), "%04d-%02d-%02d", ev.year, ev.month, ev.mday);
+                lv_label_set_text(_lblDate, buf);
+            }
             break;
+
         case UiEvent::PrayerTimesUpdate:
-            if (_lblPrayer) {
-                snprintf(buf, sizeof(buf), "F:%u D:%u A:%u | next %d min",
-                         ev.prayerMinutes[0], ev.prayerMinutes[2], ev.prayerMinutes[3],
-                         ev.nextPrayerMinutes);
-                lv_label_set_text(_lblPrayer, buf);
+            _lastPrayer = ev;
+            if (_lblPrayerNow && _screen == UiScreenId::Home) {
+                if (ev.currentPrayerIndex >= 0) {
+                    snprintf(buf, sizeof(buf), "%s now", ev.currentPrayerName);
+                } else {
+                    snprintf(buf, sizeof(buf), "Between prayers");
+                }
+                lv_label_set_text(_lblPrayerNow, buf);
+            }
+            if (_lblNextPrayer && ev.nextPrayerIndex >= 0) {
+                char cd[16];
+                formatCountdown(cd, sizeof(cd), ev.secondsToNext);
+                snprintf(buf, sizeof(buf), "%s in %s", ev.nextPrayerName, cd);
+                lv_label_set_text(_lblNextPrayer, buf);
+            }
+            if (_barProgress && ev.secondsToNext > 0) {
+                int pct = 100 - (ev.secondsToNext % 3600) / 36;
+                if (pct < 5) pct = 5;
+                if (pct > 100) pct = 100;
+                lv_bar_set_value(_barProgress, pct, LV_ANIM_ON);
+            }
+            if (_screen == UiScreenId::PrayerTimes) {
+                for (int k = 0; k < 5; k++) {
+                    int idx = kPrayerDisplayIdx[k];
+                    if (_prayerTimeLabels[k]) {
+                        int m = ev.prayerMinutes[idx];
+                        snprintf(buf, sizeof(buf), "%02d:%02d", m / 60, m % 60);
+                        lv_label_set_text(_prayerTimeLabels[k], buf);
+                    }
+                    if (_prayerCards[k]) {
+                        if (idx == ev.currentPrayerIndex || idx == ev.nextPrayerIndex) {
+                            lv_obj_set_style_border_color(_prayerCards[k], UiTheme::kAccent(), 0);
+                            lv_obj_set_style_border_width(_prayerCards[k], 2, 0);
+                        } else {
+                            lv_obj_set_style_border_width(_prayerCards[k], 1, 0);
+                            lv_obj_set_style_border_color(_prayerCards[k], lv_color_hex(0x30363d), 0);
+                        }
+                    }
+                }
             }
             break;
+
         case UiEvent::WifiStatus:
-            if (_lblStatus && _nav && _nav->current() == UiScreenId::Home) {
-                snprintf(buf, sizeof(buf), "WiFi:%s RSSI:%d", ev.wifiOn ? "ON" : "OFF", ev.wifiRssi);
-                lv_label_set_text(_lblStatus, buf);
-            }
             if (_swWifi) {
                 if (ev.wifiOn) lv_obj_add_state(_swWifi, LV_STATE_CHECKED);
                 else lv_obj_clear_state(_swWifi, LV_STATE_CHECKED);
             }
-            if (_nav->current() == UiScreenId::Wifi && _lblStatus) {
-                snprintf(buf, sizeof(buf), "WiFi:%s\n%s RSSI:%d", ev.wifiOn ? "ON" : "OFF", ev.ip, ev.wifiRssi);
-                lv_label_set_text(_lblStatus, buf);
+            if (_lblSystem && _screen == UiScreenId::System) {
+                snprintf(buf, sizeof(buf), "WiFi: %s\nIP: %s\nRSSI: %d dBm",
+                         ev.wifiOn ? "ON" : "OFF", ev.ip[0] ? ev.ip : "-", ev.wifiRssi);
+                lv_label_set_text(_lblSystem, buf);
             }
             break;
-        case UiEvent::VolumeState:
-            if (_sliderVol) lv_slider_set_value(_sliderVol, ev.volume, LV_ANIM_OFF);
+
+        case UiEvent::SystemStatus:
+            if (_sliderVol) {
+                lv_slider_set_value(_sliderVol, ev.volumePct, LV_ANIM_OFF);
+            }
+            if (_swPreFajr) {
+                if (ev.preFajr) lv_obj_add_state(_swPreFajr, LV_STATE_CHECKED);
+                else lv_obj_clear_state(_swPreFajr, LV_STATE_CHECKED);
+            }
+            if (_lblSystem && _screen == UiScreenId::System) {
+                snprintf(buf, sizeof(buf), "SD: %s\nRTC: %s\nDefault: %s",
+                         ev.sdReady ? "OK" : "FAIL", ev.timeSource,
+                         ev.defaultAzanPath[0] ? ev.defaultAzanPath : "(built-in)");
+                lv_label_set_text(_lblSystem, buf);
+            }
+            UiComponents::updateStatusBar(_statusBar, ev);
             break;
+
+        case UiEvent::VolumeState:
+            if (_sliderVol) lv_slider_set_value(_sliderVol, ev.volumePct, LV_ANIM_OFF);
+            break;
+
         case UiEvent::PreFajrState:
             if (_swPreFajr) {
                 if (ev.preFajr) lv_obj_add_state(_swPreFajr, LV_STATE_CHECKED);
                 else lv_obj_clear_state(_swPreFajr, LV_STATE_CHECKED);
             }
             break;
+
         case UiEvent::FileListReady:
-            if (_listFiles) {
-                lv_obj_clean(_listFiles);
-                for (uint8_t i = 0; i < ev.fileCount; i++) {
-                    lv_obj_t* b = lv_list_add_btn(_listFiles, LV_SYMBOL_FILE, ev.files[i].name);
-                    lv_obj_set_user_data(b, (void*)(uintptr_t)i);
-                    if (_nav->current() == UiScreenId::AzanSelect) {
-                        lv_obj_add_event_cb(b, [](lv_event_t* e) {
-                            if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-                            lv_obj_t* btn = lv_event_get_target(e);
-                            const char* name = lv_list_get_btn_text(lv_obj_get_parent(btn), btn);
-                            if (!g_active || !g_active->_bridge || !name) return;
-                            UiCommand c{};
-                            c.cmd = UiCmd::SelectAzanFile;
-                            strncpy(c.azanPath.path, name, sizeof(c.azanPath.path) - 1);
-                            bridgePost(g_active->_bridge, c);
-                        }, LV_EVENT_CLICKED, nullptr);
-                    } else if (_nav->current() == UiScreenId::Files) {
-                        lv_obj_add_event_cb(b, [](lv_event_t* e) {
-                            if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-                            lv_obj_t* btn = lv_event_get_target(e);
-                            const char* name = lv_list_get_btn_text(lv_obj_get_parent(btn), btn);
-                            if (!g_active || !g_active->_bridge || !name) return;
-                            UiCommand c{};
-                            c.cmd = UiCmd::DeleteFile;
-                            strncpy(c.del.name, name, sizeof(c.del.name) - 1);
-                            bridgePost(g_active->_bridge, c);
-                            UiCommand r{};
-                            r.cmd = UiCmd::RefreshFileList;
-                            bridgePost(g_active->_bridge, r);
-                        }, LV_EVENT_CLICKED, nullptr);
-                    }
-                }
-            }
+            populateFileList(ev);
             break;
+
         case UiEvent::StorageBusy:
-            if (_lblStatus) lv_label_set_text(_lblStatus, "SD busy (audio)");
             break;
+
         case UiEvent::AudioState:
-            if (_lblStatus && _nav->current() == UiScreenId::Home) {
-                snprintf(buf, sizeof(buf), "Audio: %s", ev.audioPlaying ? "PLAYING" : "idle");
-                lv_label_set_text(_lblStatus, buf);
+            break;
+
+        case UiEvent::FileOpResult:
+            if (_screen == UiScreenId::FileManager) {
+                UiCommand c{};
+                c.cmd = UiCmd::ListFolder;
+                strncpy(c.list.path, _listFolder, sizeof(c.list.path) - 1);
+                sendCmd(c);
             }
             break;
+
         default:
             break;
     }
@@ -369,12 +547,12 @@ void UiScreens::tickRefresh() {
     uint32_t now = millis();
     if (now - _lastRefreshMs < 1000) return;
     _lastRefreshMs = now;
-    if (_nav->current() != UiScreenId::Home) return;
+    if (_screen != UiScreenId::Home) return;
     UiCommand c{};
     c.cmd = UiCmd::RequestClock;
-    bridgePost(_bridge, c);
+    sendCmd(c);
     c.cmd = UiCmd::RequestPrayerTimes;
-    bridgePost(_bridge, c);
+    sendCmd(c);
 }
 
 #endif

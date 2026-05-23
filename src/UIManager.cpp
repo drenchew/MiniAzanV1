@@ -58,26 +58,35 @@ void UIManager::taskLoop() {
     while (true) {
         _screens.tickRefresh();
         drainEvents();
-        lv_timer_handler();
+        for (int i = 0; i < 4; i++) {
+            lv_timer_handler();
+        }
         vTaskDelay(pdMS_TO_TICKS(_cfg.timerPeriodMs));
     }
 #endif
 }
 
 void UIManager::pumpLvgl() {
+#if MINI_AZAN_UI_ENABLE
     lv_timer_handler();
+#endif
 }
 
 void UIManager::drainEvents() {
+#if MINI_AZAN_UI_ENABLE
     if (!_bridge) return;
     UiEventPayload ev{};
     while (_bridge->popEvent(ev, 0)) {
         _screens.onEvent(ev);
     }
+#endif
 }
 
 void UIManager::buildScreen(UiScreenId id) {
+#if MINI_AZAN_UI_ENABLE
     _screens.show(id);
+#endif
+    (void)id;
 }
 
 void UIManager::taskEntry(void* arg) {

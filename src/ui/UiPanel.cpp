@@ -3,9 +3,14 @@
 #if defined(MINI_AZAN_UI_ENABLE) && MINI_AZAN_UI_ENABLE
 
 #include "AppLog.h"
+#include "SpiArchitecture.h"
 
 #ifndef MINI_AZAN_TOUCH_DEBUG
 #define MINI_AZAN_TOUCH_DEBUG 0
+#endif
+
+#ifndef MINI_AZAN_LVGL_TOUCH_LOG
+#define MINI_AZAN_LVGL_TOUCH_LOG 1
 #endif
 
 static UiPanel s_panel;
@@ -44,11 +49,11 @@ bool UiPanel::begin(int width, int height) {
     tcfg.screenW = width;
     tcfg.screenH = height;
     tcfg.zThreshold = 200;
-    tcfg.pressDebounce = 3;
-    tcfg.releaseDebounce = 3;
-    tcfg.spiAvgSamples = 3;
-    tcfg.deadzonePx = 4;
-    tcfg.emaAlpha = 96;
+    tcfg.pressDebounce = 1;
+    tcfg.releaseDebounce = 1;
+    tcfg.spiAvgSamples = 4;
+    tcfg.deadzonePx = 2;
+    tcfg.emaAlpha = 128;
 
     appLog(APP_LOG_INFO, "UI", "panel begin step=touch_init");
     if (!_touch.begin(tcfg, SpiArch::uiSpi())) {
@@ -57,15 +62,18 @@ bool UiPanel::begin(int width, int height) {
     }
 
     Xpt2046Touch::Calibration cal;
-    cal.rawXMin = 300;
-    cal.rawXMax = 3700;
-    cal.rawYMin = 300;
-    cal.rawYMax = 3700;
+    cal.rawXMin = 554;
+    cal.rawXMax = 3672;
+    cal.rawYMin = 320;
+    cal.rawYMax = 3744;
+    cal.invertY = true;
+    cal.invertX = false;
     cal.valid = true;
     _touch.setCalibration(cal);
     _touch.setRotation(Xpt2046Touch::Rotation::R0);
+    _touch.resetFilter();
 
-    appLog(APP_LOG_INFO, "UI", "touch_init ok (run TOUCHDBG / cal in touch_test sketch)");
+    appLog(APP_LOG_INFO, "UI", "touch_init ok — LVGL indev uses readForLvgl()");
 
     _touch.runDiagnostics("TCH");
 
@@ -85,14 +93,25 @@ bool UiPanel::begin(int width, int height) {
     _dispDrv.ver_res = (lv_coord_t)height;
     _dispDrv.flush_cb = flushCb;
     _dispDrv.draw_buf = &_drawBuf;
-    lv_disp_drv_register(&_dispDrv);
+    _disp = lv_disp_drv_register(&_dispDrv);
+    if (!_disp) {
+        appLog(APP_LOG_ERROR, "UI", "lv_disp_drv_register failed");
+        return false;
+    }
 
     lv_indev_drv_init(&_indevDrv);
     _indevDrv.type = LV_INDEV_TYPE_POINTER;
     _indevDrv.read_cb = touchCb;
-    lv_indev_drv_register(&_indevDrv);
+    _indevDrv.disp = _disp;
+    _indev = lv_indev_drv_register(&_indevDrv);
+    if (!_indev) {
+        appLog(APP_LOG_ERROR, "UI", "lv_indev_drv_register failed");
+        return false;
+    }
 
-    appLog(APP_LOG_INFO, "UI", "panel begin complete");
+    appLogf(APP_LOG_INFO, "UI",
+            "LVGL indev OK type=POINTER disp=%p indev=%p res=%dx%d",
+            (void*)_disp, (void*)_indev, width, height);
     return true;
 }
 
@@ -104,48 +123,79 @@ void UiPanel::flushCb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* col
     TFT_eSPI& tft = instance()._tft;
     uint32_t w = (uint32_t)(area->x2 - area->x1 + 1);
     uint32_t h = (uint32_t)(area->y2 - area->y1 + 1);
+    SpiArch::releaseTftChipSelect();
     tft.startWrite();
     tft.setAddrWindow(area->x1, area->y1, w, h);
     tft.pushColors((uint16_t*)color_p, w * h, true);
     tft.endWrite();
+    SpiArch::releaseTftChipSelect();
     lv_disp_flush_ready(drv);
 }
 
 void UiPanel::touchCb(lv_indev_drv_t* drv, lv_indev_data_t* data) {
     (void)drv;
     UiPanel& panel = instance();
-    int16_t x = 0, y = 0;
-    const bool pressed = panel._touch.getPoint(x, y);
+
+    SpiArch::releaseTftChipSelect();
+
+    Xpt2046Touch::TouchPoint pt{};
+    const bool pressed = panel._touch.readForLvgl(pt);
 
     if (pressed) {
+        panel._lastTouchX = pt.x;
+        panel._lastTouchY = pt.y;
         data->state = LV_INDEV_STATE_PRESSED;
-        data->point.x = x;
-        data->point.y = y;
+        data->point.x = pt.x;
+        data->point.y = pt.y;
 
 #if MINI_AZAN_TOUCH_DEBUG
-        static int16_t lastX = -1, lastY = -1;
-        if (lastX != x || lastY != y) {
+        static int16_t dbgLastX = -1, dbgLastY = -1;
+        if (dbgLastX != pt.x || dbgLastY != pt.y) {
             TFT_eSPI& tft = panel._tft;
             tft.startWrite();
-            if (lastX >= 0) {
-                tft.fillCircle(lastX, lastY, 6, TFT_BLACK);
+            if (dbgLastX >= 0) {
+                tft.fillCircle(dbgLastX, dbgLastY, 6, TFT_BLACK);
             }
-            tft.fillCircle(x, y, 6, TFT_RED);
+            tft.fillCircle(pt.x, pt.y, 4, TFT_RED);
             tft.endWrite();
-            lastX = x;
-            lastY = y;
+            SpiArch::releaseTftChipSelect();
+            dbgLastX = pt.x;
+            dbgLastY = pt.y;
         }
 #endif
     } else {
         data->state = LV_INDEV_STATE_RELEASED;
+        data->point.x = panel._lastTouchX;
+        data->point.y = panel._lastTouchY;
+
 #if MINI_AZAN_TOUCH_DEBUG
-        static int16_t lastX = -1, lastY = -1;
-        if (lastX >= 0) {
-            panel._tft.fillCircle(lastX, lastY, 6, TFT_BLACK);
-            lastX = -1;
+        static int16_t dbgLastX = -1;
+        if (dbgLastX >= 0) {
+            panel._tft.fillCircle(dbgLastX, panel._lastTouchY, 6, TFT_BLACK);
+            dbgLastX = -1;
+            SpiArch::releaseTftChipSelect();
         }
 #endif
     }
+
+#if MINI_AZAN_LVGL_TOUCH_LOG
+    static bool lastPressed = false;
+    static uint32_t lastLogMs = 0;
+    const uint32_t now = millis();
+    const bool edge = (pressed != lastPressed);
+    if (edge || (pressed && (now - lastLogMs) >= 150)) {
+        lastLogMs = now;
+        appLogf(APP_LOG_INFO, "LVGL_TCH",
+                "lvgl_in=%s irq=%s raw=%d,%d z=%u map=%d,%d out=%d,%d indev=%p",
+                pressed ? "PRESSED" : "RELEASED",
+                panel._touch.irqLow() ? "LOW" : "HIGH",
+                pt.rawX, pt.rawY, (unsigned)pt.z,
+                pt.mappedX, pt.mappedY,
+                panel._lastTouchX, panel._lastTouchY,
+                (void*)panel._indev);
+    }
+    lastPressed = pressed;
+#endif
 }
 
 #endif

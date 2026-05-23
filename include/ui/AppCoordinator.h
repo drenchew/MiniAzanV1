@@ -4,18 +4,15 @@
 #include "ui/UiTypes.h"
 #include "AudioManager.h"
 #include "StorageManager.h"
+#include "StorageJobQueue.h"
 #include "TimeManager.h"
 #include "AppTypes.h"
 
-
-/**
- * Executes UiBridge commands on a non-LVGL context (main loop or dedicated task).
- * Only module allowed to combine UI requests with StorageManager / AudioManager / NVS / WiFi.
- */
 struct AppServices {
     AudioManager* audio = nullptr;
     StorageManager* storage = nullptr;
     TimeManager* time = nullptr;
+    StorageJobQueue* storageJobs = nullptr;
 
     bool* wifiIsOn = nullptr;
     bool* isAudioPlaying = nullptr;
@@ -37,10 +34,12 @@ struct AppServices {
     bool* cachedPrayerTimesValid = nullptr;
 
     void (*toggleWifi)() = nullptr;
+    void (*playFile)(const char* path) = nullptr;
     void (*saveVolumeToNvs)(uint8_t) = nullptr;
     void (*savePreFajrToNvs)(bool) = nullptr;
     void (*saveAzanIndexToNvs)(uint8_t) = nullptr;
     void (*saveAzanPathToNvs)(const char* path) = nullptr;
+    void (*saveWifiLastToNvs)(bool on) = nullptr;
     bool (*readDayRecord)(int day, DayRecord& out) = nullptr;
 };
 
@@ -52,23 +51,27 @@ public:
     UiBridge& bridge() { return *_bridge; }
 
 private:
+    static void storageEmitThunk(const UiEventPayload& ev, void* user);
     void dispatch(const UiCommand& cmd);
     void emit(const UiEventPayload& ev);
     void handleStopAudio();
-    void handleSetVolume(uint8_t v);
+    void handleSetVolumePct(uint8_t pct);
     void handlePreFajr(bool on);
     void handleAzanIndex(uint8_t idx);
     void handleToggleWifi();
     void handleRequestWifiStatus();
+    void handleRequestSystemStatus();
     void handleRequestClock();
     void handleRequestPrayer();
     void handleListAudioFiles();
-    void handleDeleteFile(const char* name);
+    void handleListFolder(const char* path, uint8_t page);
+    void handleDeleteFile(const char* path);
     void handleSelectAzanFile(const char* path);
+    void handlePlayFile(const char* path);
     void handleListFiles(bool audioOnly);
     bool storageBlocked() const;
+    static const char* prayerName(int idx);
 
     UiBridge* _bridge = nullptr;
     AppServices _svc{};
-    uint32_t _listSliceMs = 0;
 };

@@ -26,7 +26,11 @@ private:
     lv_disp_draw_buf_t _drawBuf{};
     lv_disp_drv_t _dispDrv{};
     lv_indev_drv_t _indevDrv{};
+    lv_disp_t* _disp = nullptr;
+    lv_indev_t* _indev = nullptr;
     lv_color_t* _buf1 = nullptr;
+    int16_t _lastTouchX = 0;
+    int16_t _lastTouchY = 0;
     static constexpr int kBufLines = 40;
 };
 

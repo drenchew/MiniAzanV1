@@ -14,6 +14,9 @@ public:
         int32_t rawXMax = 3700;
         int32_t rawYMin = 300;
         int32_t rawYMax = 3700;
+        /** High raw Y = physical top of panel (common XPT2046 + ILI9341 wiring). */
+        bool invertY = true;
+        bool invertX = false;
         bool valid = false;
     };
 
@@ -53,6 +56,7 @@ public:
         int16_t filtY = 0;
         int16_t mappedX = 0;
         int16_t mappedY = 0;
+        uint16_t z = 0;
     };
 
     bool begin(const Config& cfg, SPIClass& spi);
@@ -77,6 +81,15 @@ public:
      */
     bool getPoint(int16_t& x, int16_t& y);
     bool getPointEx(TouchPoint& out);
+
+    /** Map + optional invert only (no rotation / EMA) — for calib overlay logs. */
+    bool readMappedPoint(TouchPoint& out);
+
+    /**
+     * LVGL pointer input: IRQ-gated, map + rotate, no press-debounce gate.
+     * Returns false when finger is up (filter reset).
+     */
+    bool readForLvgl(TouchPoint& out);
 
     /** Corner index 0..3: TL, TR, BR, BL. Returns false if sample invalid. */
     bool captureCalibrationCorner(int corner, uint16_t& rawX, uint16_t& rawY);

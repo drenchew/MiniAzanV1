@@ -79,6 +79,83 @@ String StorageManager::normalizePath(const char* path) {
     return p;
 }
 
+void StorageManager::normalizePathTo(const char* path, char* out, size_t outLen) {
+    if (!out || outLen < 2) return;
+    if (!path || !path[0]) {
+        strncpy(out, "/", outLen - 1);
+        out[outLen - 1] = '\0';
+        return;
+    }
+    if (path[0] == '/') {
+        strncpy(out, path, outLen - 1);
+    } else {
+        snprintf(out, outLen, "/%s", path);
+    }
+    out[outLen - 1] = '\0';
+}
+
+int StorageManager::listDirectoryPage(const char* dirPath, DirEntry* out, int maxEntries,
+                                      int skip, int* totalOut) {
+    if (!out || maxEntries <= 0 || !_ready) {
+        return 0;
+    }
+    if (_playbackLocked) {
+        return -1;
+    }
+    if (!takeLock(_cfg.mutexTimeout)) {
+        return -1;
+    }
+
+    char dir[72];
+    normalizePathTo(dirPath, dir, sizeof(dir));
+
+    File root = SD.open(dir);
+    if (!root || !root.isDirectory()) {
+        if (root) {
+            root.close();
+        }
+        giveLock();
+        if (totalOut) {
+            *totalOut = 0;
+        }
+        return 0;
+    }
+
+    int index = 0;
+    int filled = 0;
+    File file = root.openNextFile();
+    while (file) {
+        if (!file.isDirectory()) {
+            if (index >= skip && filled < maxEntries) {
+                const char* full = file.name();
+                const char* base = full;
+                if (full) {
+                    const char* slash = strrchr(full, '/');
+                    if (slash && slash[1]) {
+                        base = slash + 1;
+                    }
+                } else {
+                    base = "";
+                }
+                strncpy(out[filled].name, base, sizeof(out[filled].name) - 1);
+                out[filled].name[sizeof(out[filled].name) - 1] = '\0';
+                out[filled].size = (uint32_t)file.size();
+                filled++;
+            }
+            index++;
+        }
+        file.close();
+        file = root.openNextFile();
+    }
+    root.close();
+    giveLock();
+
+    if (totalOut) {
+        *totalOut = index;
+    }
+    return filled;
+}
+
 bool StorageManager::fileExists(const char* path) {
     String full = normalizePath(path);
     if (full.isEmpty()) return false;
@@ -155,22 +232,24 @@ void StorageManager::uploadEnd(bool success) {
     (void)success;
 }
 
-bool StorageManager::listRootFilesJson(String& jsonOut) {
+bool StorageManager::listDirectoryJson(const char* dirPath, String& jsonOut) {
     jsonOut = "{\"files\":[";
-    if (!_ready) {
+    if (!_ready || !dirPath) {
         jsonOut += "]}";
-        return true;
+        return !_ready;
     }
     if (!takeLock(_cfg.mutexTimeout)) {
         jsonOut += "]}";
         return false;
     }
 
-    File root = SD.open("/");
-    if (!root) {
+    String dir = normalizePath(dirPath);
+    File root = SD.open(dir.c_str());
+    if (!root || !root.isDirectory()) {
+        if (root) root.close();
         giveLock();
         jsonOut += "]}";
-        return false;
+        return true;
     }
 
     bool first = true;
@@ -178,7 +257,10 @@ bool StorageManager::listRootFilesJson(String& jsonOut) {
     while (file) {
         if (!file.isDirectory()) {
             if (!first) jsonOut += ",";
-            jsonOut += "{\"name\":\"" + String(file.name()) + "\",\"size\":" + String(file.size()) + "}";
+            String name = String(file.name());
+            int slash = name.lastIndexOf('/');
+            if (slash >= 0) name = name.substring(slash + 1);
+            jsonOut += "{\"name\":\"" + name + "\",\"size\":" + String(file.size()) + "}";
             first = false;
         }
         file.close();
@@ -188,6 +270,10 @@ bool StorageManager::listRootFilesJson(String& jsonOut) {
     giveLock();
     jsonOut += "]}";
     return true;
+}
+
+bool StorageManager::listRootFilesJson(String& jsonOut) {
+    return listDirectoryJson("/", jsonOut);
 }
 
 int StorageManager::listRootFilesDebug(void (*logLine)(const char* line)) {
