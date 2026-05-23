@@ -33,8 +33,27 @@ constexpr int UI_TFT_CS   = 15;
 constexpr int UI_TFT_DC   = 2;
 constexpr int UI_TFT_RST  = 32;
 constexpr int UI_TOUCH_CS = 33;
+/** Optional XPT2046 pen IRQ (input-only GPIO). Set -1 to disable. */
+constexpr int UI_TOUCH_IRQ = 34;
+
+struct BusInitResult {
+    bool ok = false;
+    int hostId = -1;  // ESP32: VSPI=3 HSPI=2 (Arduino SPIClass::bus())
+    int sck = 0;
+    int miso = 0;
+    int mosi = 0;
+};
 
 SPIClass& sdSpi();
 SPIClass& uiSpi();
+
+/** VSPI: SD only — call once before SD.begin(). */
+BusInitResult initSdBus();
+
+/** HSPI: TFT + touch — call once before tft.init() / touch.begin(). */
+BusInitResult initUiBus();
+
+/** Drive TFT CS high so XPT2046 can use shared MISO (required during touch SPI). */
+void releaseTftChipSelect();
 
 }  // namespace SpiArch

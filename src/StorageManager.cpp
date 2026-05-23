@@ -35,19 +35,21 @@ bool StorageManager::begin(const Config& cfg, LogFn logFn) {
         return false;
     }
 
-    pinMode(_cfg.csPin, OUTPUT);
-    digitalWrite(_cfg.csPin, HIGH);
+    SpiArch::BusInitResult bus = SpiArch::initSdBus();
+    if (!bus.ok) {
+        logf(LOG_ERROR, "STORAGE", "VSPI init failed host=%d expect=%d", bus.hostId, SpiArch::SD_HOST);
+        return false;
+    }
 
-    SPIClass& bus = SpiArch::sdSpi();
-    bus.begin(_cfg.sck, _cfg.miso, _cfg.mosi, _cfg.csPin);
-
-    if (!SD.begin(_cfg.csPin, bus)) {
+    SPIClass& spi = SpiArch::sdSpi();
+    if (!SD.begin(_cfg.csPin, spi)) {
         logf(LOG_ERROR, "STORAGE", "SD.begin failed on VSPI (CS=%d)", _cfg.csPin);
         return false;
     }
 
     _ready = true;
-    logf(LOG_INFO, "STORAGE", "SD on VSPI SCK=%d MISO=%d MOSI=%d CS=%d",
+    logf(LOG_INFO, "STORAGE", "SD on VSPI host=%d SCK=%d MISO=%d MOSI=%d CS=%d",
+         bus.hostId,
          _cfg.sck, _cfg.miso, _cfg.mosi, _cfg.csPin);
     return true;
 }

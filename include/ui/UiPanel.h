@@ -11,6 +11,7 @@
 class UiPanel {
 public:
     bool begin(int width, int height);
+    bool runTouchDiagnostics();
     TFT_eSPI& tft() { return _tft; }
     Xpt2046Touch& touch() { return _touch; }
 

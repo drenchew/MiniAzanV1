@@ -1,6 +1,6 @@
 #include "UIManager.h"
 
-#if MINI_AZAN_UI_ENABLE
+#if defined(MINI_AZAN_UI_ENABLE) && MINI_AZAN_UI_ENABLE
 #include "ui/UiPanel.h"
 #endif
 

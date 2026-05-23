@@ -17,6 +17,9 @@
 #include "ui/UiBridge.h"
 #include "ui/AppCoordinator.h"
 #include "UIManager.h"
+#if defined(MINI_AZAN_UI_ENABLE) && MINI_AZAN_UI_ENABLE
+#include "ui/UiPanel.h"
+#endif
 
 // --- LOG LEVEL DEFINITIONS ---
 #define LOG_ERROR    0
@@ -770,6 +773,11 @@ void handleDebugConsole() {
         else if (input == "CLKDIAG") {
             timeMgr.update();
         }
+#if defined(MINI_AZAN_UI_ENABLE) && MINI_AZAN_UI_ENABLE
+        else if (input == "TOUCHDBG") {
+            UiPanel::instance().runTouchDiagnostics();
+        }
+#endif
         else if (input == "LISTFILES") {
             sysLog(LOG_INFO, "DEBUG", "Listing audio files and their status:");
             for (int i = 0; i < numAzanFiles; i++) {
@@ -816,7 +824,7 @@ void handleDebugConsole() {
         }
         else {
             sysLogf(LOG_WARN, "DEBUG", "Unknown command: '%s'", input.c_str());
-            appLog(APP_LOG_INFO, "CMD", "help: STATUS OFFSET:0 +N/-N PRAYERLOG CLKDIAG LISTFILES SDLS PLAYTEST:x WIFI_ON AUTO_WIFI_OFF_TOGGLE");
+            appLog(APP_LOG_INFO, "CMD", "help: STATUS OFFSET:0 +N/-N PRAYERLOG CLKDIAG TOUCHDBG LISTFILES SDLS PLAYTEST:x WIFI_ON AUTO_WIFI_OFF_TOGGLE");
         }
     }
 }
