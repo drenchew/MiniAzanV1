@@ -11,6 +11,10 @@
 #include "StorageManager.h"
 #include "TimeManager.h"
 #include "AudioManager.h"
+#include "AppTypes.h"
+#include "ui/UiBridge.h"
+#include "ui/AppCoordinator.h"
+#include "UIManager.h"
 
 // --- LOG LEVEL DEFINITIONS ---
 #define LOG_ERROR    0
@@ -34,13 +38,12 @@ const char* ntpServer  = "pool.ntp.org";
 #define DEFAULT_PRAYER_TIMES_FILE "/prayer_times.bin"
 #define BYTES_PER_DAY 12
 
-struct DayRecord {
-    uint16_t times[6]; 
-};
-
 TimeManager timeMgr;
 StorageManager storageMgr;
 AudioManager audioMgr;
+UiBridge uiBridge;
+AppCoordinator appCoord;
+UIManager uiMgr;
 
 // Глобални обекти
 AsyncWebServer server(80);
@@ -48,6 +51,7 @@ AsyncWebServer server(80);
 int timeOffsetMinutes = 0; 
 bool preFajrEnabled = false; 
 
+char uiSelectedAzan[64] = "";
 const char* azanFiles[] = {"/Luhaidan_Azan_1.mp3", "/Bahanan_Azan_1.mp3 ", "/azan3.mp3"};
 const int numAzanFiles = 3;
 int currentAzanIndex = 0; 
@@ -80,6 +84,8 @@ const uint8_t MIN_VOLUME = 0;
 const uint8_t MAX_VOLUME = 21;
 const char* NVS_NAMESPACE = "azan_system";
 const char* NVS_VOLUME_KEY = "volume";
+const char* NVS_PREFAJR_KEY = "prefajr";
+const char* NVS_AZAN_IDX_KEY = "azan_idx";
 
 // --- WiFi AUTO-ON BEFORE PRAYER ---
 unsigned long wifiAutoOnTime = 0;
@@ -100,6 +106,8 @@ bool isAudioPlaying = false;
 unsigned long audioStartTime = 0;
 const char* currentPlayingFile = "";
 unsigned long lastMinutePrayed = 0;
+
+bool getDayRecordFromBin(int day, DayRecord& record);
 
 // --- PROFESSIONAL LOGGING FUNCTION ---
 void sysLog(int level, const char* tag, const char* message) {
@@ -152,6 +160,15 @@ static void debugSdLogLine(const char* line) {
     sysLog(LOG_INFO, "DEBUG", line);
 }
 
+static bool readDayRecordBridge(int day, DayRecord& out) {
+    return getDayRecordFromBin(day, out);
+}
+
+const char* activeAzanPath() {
+    if (uiSelectedAzan[0] != '\0') return uiSelectedAzan;
+    return azanFiles[currentAzanIndex];
+}
+
 // --- NVS FUNCTIONS FOR PERSISTENT STORAGE ---
 void saveVolumeToNVS(uint8_t volume) {
     nvs_handle_t nvs_handle;
@@ -171,6 +188,47 @@ void saveVolumeToNVS(uint8_t volume) {
         sysLogf(LOG_DEBUG, "NVS", "Volume saved: %d", volume);
     }
     nvs_close(nvs_handle);
+}
+
+void savePreFajrToNVS(bool enabled) {
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, NVS_PREFAJR_KEY, enabled ? 1 : 0);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+void loadUiPrefsFromNVS() {
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return;
+    uint8_t pf = 0;
+    if (nvs_get_u8(h, NVS_PREFAJR_KEY, &pf) == ESP_OK) preFajrEnabled = (pf != 0);
+    uint8_t az = 0;
+    if (nvs_get_u8(h, NVS_AZAN_IDX_KEY, &az) == ESP_OK && az < (uint8_t)numAzanFiles) {
+        currentAzanIndex = az;
+    }
+    size_t len = sizeof(uiSelectedAzan);
+    if (nvs_get_str(h, "azan_path", uiSelectedAzan, &len) != ESP_OK) {
+        uiSelectedAzan[0] = '\0';
+    }
+    nvs_close(h);
+}
+
+void saveAzanPathToNVS(const char* path) {
+    if (!path) return;
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_str(h, "azan_path", path);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+void saveAzanIndexToNVS(uint8_t index) {
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_u8(h, NVS_AZAN_IDX_KEY, index);
+    nvs_commit(h);
+    nvs_close(h);
 }
 
 uint8_t loadVolumeFromNVS() {
@@ -363,6 +421,9 @@ String minutesToTime(int totalMinutes);
 void printHealthStatus();
 int getTimeToNextPrayer();
 void playAudioFile(const char* filePath);
+const char* activeAzanPath();
+bool getDayRecordFromBin(int day, DayRecord& record);
+static bool readDayRecordBridge(int day, DayRecord& out);
 static void debugSdLogLine(const char* line);
 
 // --- SAFE WIFI TOGGLE FUNCTION ---
@@ -448,6 +509,7 @@ void setup() {
     ESP_ERROR_CHECK(ret);
     
     currentVolume = loadVolumeFromNVS();
+    loadUiPrefsFromNVS();
 
     TimeManager::Config tmCfg;
     tmCfg.ntpServer = ntpServer;
@@ -462,7 +524,39 @@ void setup() {
     audioCfg.defaultVolume = currentVolume;
     audioMgr.begin(storageMgr, audioCfg, moduleLog);
     audioMgr.setVolume(currentVolume);
- 
+
+    uiBridge.begin();
+    AppServices svc{};
+    svc.audio = &audioMgr;
+    svc.storage = &storageMgr;
+    svc.time = &timeMgr;
+    svc.wifiIsOn = &wifiIsOn;
+    svc.isAudioPlaying = &isAudioPlaying;
+    svc.timeOffsetMinutes = &timeOffsetMinutes;
+    svc.preFajrEnabled = &preFajrEnabled;
+    svc.currentVolume = &currentVolume;
+    svc.minVolume = MIN_VOLUME;
+    svc.maxVolume = MAX_VOLUME;
+    svc.currentAzanIndex = &currentAzanIndex;
+    svc.numAzanFiles = numAzanFiles;
+    svc.azanFiles = azanFiles;
+    svc.prayerBinPath = DEFAULT_PRAYER_TIMES_FILE;
+    svc.prayerRecordSize = BYTES_PER_DAY;
+    svc.cachedPrayerTimes = &cachedPrayerTimes;
+    svc.cachedPrayerDay = &cachedPrayerDay;
+    svc.cachedPrayerTimesValid = &cachedPrayerTimesValid;
+    svc.toggleWifi = toggleWiFi;
+    svc.saveVolumeToNvs = saveVolumeToNVS;
+    svc.savePreFajrToNvs = savePreFajrToNVS;
+    svc.saveAzanIndexToNvs = saveAzanIndexToNVS;
+    svc.saveAzanPathToNvs = saveAzanPathToNVS;
+    svc.uiSelectedAzanPath = uiSelectedAzan;
+    svc.uiSelectedAzanPathSize = sizeof(uiSelectedAzan);
+    svc.readDayRecord = readDayRecordBridge;
+    appCoord.begin(uiBridge, svc);
+    if (uiMgr.begin(uiBridge)) {
+        sysLog(LOG_INFO, "UI", "LVGL UI enabled");
+    }
 
     // Регистрираме рутовете само веднъж тук
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){ request->send_P(200, "text/html", index_html); });
@@ -564,6 +658,8 @@ void setup() {
 
 void loop() {
     timeMgr.update();
+    appCoord.poll();
+    uiMgr.poll();
     handleDebugConsole(); 
     
     // --- HARDWARE BUTTON CHECK FOR WI-FI ---
@@ -729,10 +825,10 @@ void checkAndPlayAzan() {
     if (preFajrEnabled && currentTotalMinutes == preFajrTarget && lastPreFajrDay != day) {
         sysLogf(LOG_INFO, "PRAYER", "PRE-FAJR ALARM triggered (30 min before Fajr at %s)", 
                minutesToTime(fajrMinutes).c_str());
-        playAudioFile(azanFiles[currentAzanIndex]);
+        playAudioFile(activeAzanPath());
         isAudioPlaying = true;
         audioStartTime = millis();
-        currentPlayingFile = azanFiles[currentAzanIndex];
+        currentPlayingFile = activeAzanPath();
         lastPreFajrDay = day;
         lastMinutePrayed = currentTotalMinutes;
         return; 
@@ -749,11 +845,11 @@ void checkAndPlayAzan() {
             sysLogf(LOG_INFO, "PRAYER", "Prayer time started: %s (%s)", 
                    prayerNames[i], minutesToTime(cachedPrayerTimes.times[i]).c_str());
             
-            playAudioFile(azanFiles[currentAzanIndex]);
+            playAudioFile(activeAzanPath());
             
             isAudioPlaying = true;
             audioStartTime = millis();
-            currentPlayingFile = azanFiles[currentAzanIndex];
+            currentPlayingFile = activeAzanPath();
             lastMinutePrayed = currentTotalMinutes;
             break;
         }

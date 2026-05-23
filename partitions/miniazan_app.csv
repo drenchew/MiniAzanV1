@@ -1,0 +1,6 @@
+# MiniAzan — 4MB flash, single large factory app (no OTA)
+# Frees headroom for LVGL + web stack (default board partition is ~1.31MB)
+# Name,   Type, SubType, Offset,  Size, Flags
+nvs,      data, nvs,     0x9000,  0x6000,
+phy_init, data, phy,     0xf000,  0x1000,
+factory,  app,  factory, 0x10000, 0x3F0000,

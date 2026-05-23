@@ -30,6 +30,8 @@ constexpr int UI_SCK  = 14;
 constexpr int UI_MISO = 12;
 constexpr int UI_MOSI = 13;
 constexpr int UI_TFT_CS   = 15;
+constexpr int UI_TFT_DC   = 2;
+constexpr int UI_TFT_RST  = 32;
 constexpr int UI_TOUCH_CS = 33;
 
 SPIClass& sdSpi();

@@ -24,3 +24,7 @@ The library reads the SD filesystem internally during `audio.loop()`. Playback l
 
 - Initialize `SpiArch::uiSpi()` inside `UIManager::begin()` only.
 - Do not call `SPI.begin()` on VSPI from UI code.
+
+## LVGL UI
+
+See `docs/UI_ARCHITECTURE.md`. UI uses `UiBridge` + `AppCoordinator`; never SD/I2S from LVGL task.
