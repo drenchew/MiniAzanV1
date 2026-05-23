@@ -69,16 +69,19 @@ void AppCoordinator::handleToggleWifi() {
 }
 
 void AppCoordinator::handleRequestClock() {
-    struct tm t{};
+    PrayerNow now{};
     UiEventPayload ev{};
     ev.type = UiEvent::ClockUpdate;
-    if (_svc.time && _svc.time->getCurrentTime(t, 0)) {
-        ev.hour = t.tm_hour;
-        ev.minute = t.tm_min;
-        ev.second = t.tm_sec;
+    if (_svc.time && _svc.time->getPrayerNow(now) && now.valid) {
+        ev.hour = now.hour;
+        ev.minute = now.minute;
+        ev.second = now.second;
         if (_svc.time->rtcUsable()) strncpy(ev.clockSource, "RTC", sizeof(ev.clockSource) - 1);
-        else if (_svc.time->activeSource() == TimeManager::Source::Ntp) strncpy(ev.clockSource, "NTP", sizeof(ev.clockSource) - 1);
-        else strncpy(ev.clockSource, "NONE", sizeof(ev.clockSource) - 1);
+        else if (_svc.time->activeSource() == TimeManager::Source::NtpFallback) {
+            strncpy(ev.clockSource, "NTP", sizeof(ev.clockSource) - 1);
+        } else {
+            strncpy(ev.clockSource, "NONE", sizeof(ev.clockSource) - 1);
+        }
     }
     emit(ev);
 }
@@ -86,14 +89,11 @@ void AppCoordinator::handleRequestClock() {
 void AppCoordinator::handleRequestPrayer() {
     if (!_svc.readDayRecord) return;
 
-    struct tm t{};
-    if (!_svc.time || !_svc.time->getCurrentTime(t, 0)) return;
+    PrayerNow now{};
+    if (!_svc.time || !_svc.time->getPrayerNow(now) || !now.valid) return;
 
-    int offset = _svc.timeOffsetMinutes ? *_svc.timeOffsetMinutes : 0;
-    time_t raw = mktime(&t) + (offset * 60);
-    struct tm* adj = localtime(&raw);
-    int day = adj->tm_yday + 1;
-    int nowMin = adj->tm_hour * 60 + adj->tm_min;
+    int day = now.yday;
+    int nowMin = now.totalMinutes;
 
     DayRecord rec{};
     if (!_svc.readDayRecord(day, rec)) return;

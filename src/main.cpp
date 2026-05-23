@@ -10,6 +10,8 @@
 #include "SpiArchitecture.h"
 #include "StorageManager.h"
 #include "TimeManager.h"
+#include "AppLog.h"
+#include "PrayerScheduler.h"
 #include "AudioManager.h"
 #include "AppTypes.h"
 #include "ui/UiBridge.h"
@@ -41,6 +43,7 @@ const char* ntpServer  = "pool.ntp.org";
 TimeManager timeMgr;
 StorageManager storageMgr;
 AudioManager audioMgr;
+PrayerScheduler prayerSched;
 UiBridge uiBridge;
 AppCoordinator appCoord;
 UIManager uiMgr;
@@ -56,8 +59,6 @@ const char* azanFiles[] = {"/Luhaidan_Azan_1.mp3", "/Bahanan_Azan_1.mp3 ", "/aza
 const int numAzanFiles = 3;
 int currentAzanIndex = 0; 
 int lastPreFajrDay = -1; 
-// --- AUDIO DEBUG VARIABLES ---
-bool lastAudioRunningState = false;
 uint32_t lastAudioDuration = 0;
 
 // --- WI-FI УПРАВЛЕНИЕ И ТАЙМЕР ---
@@ -99,9 +100,7 @@ unsigned long nextPrayerTime = 0;
 bool autoWifiOffEnabled = true;
 
 // --- LOGGING AND TIMING VARIABLES ---
-unsigned long lastSecondPrint = 0;
-unsigned long last10SecPrint = 0;
-unsigned long lastHealthCheck = 0;
+unsigned long lastHealthLogMs = 0;
 bool isAudioPlaying = false;
 unsigned long audioStartTime = 0;
 const char* currentPlayingFile = "";
@@ -109,51 +108,25 @@ unsigned long lastMinutePrayed = 0;
 
 bool getDayRecordFromBin(int day, DayRecord& record);
 
-// --- PROFESSIONAL LOGGING FUNCTION ---
 void sysLog(int level, const char* tag, const char* message) {
-    struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) return;
-    
-    const char* levelStr;
-    switch(level) {
-        case LOG_ERROR:   levelStr = "ERROR  "; break;
-        case LOG_WARN:    levelStr = "WARN   "; break;
-        case LOG_INFO:    levelStr = "INFO   "; break;
-        case LOG_DEBUG:   levelStr = "DEBUG  "; break;
-        default:          levelStr = "UNKNOW "; break;
-    }
-    
-    Serial.printf("[%02d:%02d:%02d][%s][%s]: %s\n", 
-                  timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, 
-                  levelStr, tag, message);
+    appLog(level, tag, message);
 }
 
 void sysLogf(int level, const char* tag, const char* fmt, ...) {
-    struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) return;
-    
-    const char* levelStr;
-    switch(level) {
-        case LOG_ERROR:   levelStr = "ERROR  "; break;
-        case LOG_WARN:    levelStr = "WARN   "; break;
-        case LOG_INFO:    levelStr = "INFO   "; break;
-        case LOG_DEBUG:   levelStr = "DEBUG  "; break;
-        default:          levelStr = "UNKNOW "; break;
-    }
-    
     char buffer[256];
     va_list args;
     va_start(args, fmt);
     vsnprintf(buffer, sizeof(buffer), fmt, args);
     va_end(args);
-    
-    Serial.printf("[%02d:%02d:%02d][%s][%s]: %s\n", 
-                  timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, 
-                  levelStr, tag, buffer);
+    appLog(level, tag, buffer);
 }
 
 void moduleLog(int level, const char* tag, const char* message) {
-    sysLog(level, tag, message);
+    appLog(level, tag, message);
+}
+
+static void syncDebugOffset() {
+    timeMgr.setDebugOffsetMinutes(timeOffsetMinutes);
 }
 
 static void debugSdLogLine(const char* line) {
@@ -413,16 +386,13 @@ const char index_html[] PROGMEM = R"rawliteral(
 </html>
 )rawliteral";
 
-void checkAndPlayAzan();
 void handleDebugConsole();
 void printStatus();
-bool getDayRecordFromBin(int day, DayRecord &record);
-String minutesToTime(int totalMinutes);
 void printHealthStatus();
-int getTimeToNextPrayer();
 void playAudioFile(const char* filePath);
 const char* activeAzanPath();
 bool getDayRecordFromBin(int day, DayRecord& record);
+String minutesToTime(int totalMinutes);
 static bool readDayRecordBridge(int day, DayRecord& out);
 static void debugSdLogLine(const char* line);
 
@@ -514,10 +484,27 @@ void setup() {
     TimeManager::Config tmCfg;
     tmCfg.ntpServer = ntpServer;
     timeMgr.begin(tmCfg, moduleLog);
+    appLogInit(&timeMgr);
+    syncDebugOffset();
     timeMgr.setWifiConnected(wifiConnected);
     if (wifiConnected && !timeMgr.rtcUsable()) {
         timeMgr.requestNtpSync();
     }
+
+    PrayerScheduler::Hooks ph{};
+    ph.playAzan = []() { playAudioFile(activeAzanPath()); };
+    ph.setAudioPlaying = [](bool v) {
+        isAudioPlaying = v;
+        if (v) audioStartTime = millis();
+    };
+    ph.setCurrentFile = [](const char* p) { currentPlayingFile = p ? p : ""; };
+    ph.getAzanPath = activeAzanPath;
+    ph.preFajrEnabled = &preFajrEnabled;
+    ph.lastPreFajrDay = &lastPreFajrDay;
+    PrayerScheduler::Config pcfg;
+    pcfg.prayerBinPath = DEFAULT_PRAYER_TIMES_FILE;
+    pcfg.recordSize = BYTES_PER_DAY;
+    prayerSched.begin(timeMgr, storageMgr, pcfg, ph);
 
     AudioManager::Config audioCfg;
     audioCfg.pins = {I2S_BCLK, I2S_LRC, I2S_DOUT};
@@ -532,7 +519,6 @@ void setup() {
     svc.time = &timeMgr;
     svc.wifiIsOn = &wifiIsOn;
     svc.isAudioPlaying = &isAudioPlaying;
-    svc.timeOffsetMinutes = &timeOffsetMinutes;
     svc.preFajrEnabled = &preFajrEnabled;
     svc.currentVolume = &currentVolume;
     svc.minVolume = MIN_VOLUME;
@@ -679,71 +665,57 @@ void loop() {
         autoWifiShutdownDone = true;
     }
     
-    // --- AUTO WI-FI ON BEFORE PRAYER (with retry logic) ---
-    struct tm timeinfo;
-    if (getLocalTime(&timeinfo)) {
-        time_t rawtime = mktime(&timeinfo);
-        rawtime += (timeOffsetMinutes * 60);
-        struct tm *adjustedTime = localtime(&rawtime);
-        int day = adjustedTime->tm_yday + 1;
-        int currentTotalMinutes = adjustedTime->tm_hour * 60 + adjustedTime->tm_min;
-        
-        // Load prayer times if needed
-        if (cachedPrayerDay != day || !cachedPrayerTimesValid) {
-            if (getDayRecordFromBin(day, cachedPrayerTimes)) {
-                cachedPrayerDay = day;
-                cachedPrayerTimesValid = true;
-            }
-        }
-        
-        // Find the next prayer time (skip DUHA)
-        if (cachedPrayerTimesValid) {
+    prayerSched.update();
+
+    PrayerNow now{};
+    if (timeMgr.getPrayerNow(now) && now.valid) {
+        int currentTotalMinutes = now.totalMinutes;
+        DayRecord today{};
+        if (prayerSched.getTodayTimes(today)) {
+            cachedPrayerTimes = today;
+            cachedPrayerDay = now.yday;
+            cachedPrayerTimesValid = true;
+
             int nextPrayer = -1;
             for (int i = 0; i < 6; i++) {
-                if (i == 1) continue; // Skip DUHA
-                if (cachedPrayerTimes.times[i] >= currentTotalMinutes) {
-                    nextPrayer = cachedPrayerTimes.times[i];
+                if (i == 1) continue;
+                if (today.times[i] >= currentTotalMinutes) {
+                    nextPrayer = today.times[i];
                     break;
                 }
             }
-            
-            // If no prayer found today, use first prayer tomorrow
-            if (nextPrayer == -1 && getDayRecordFromBin(day + 1, cachedPrayerTimes)) {
-                nextPrayer = cachedPrayerTimes.times[0];
+            if (nextPrayer == -1) {
+                DayRecord tomorrow{};
+                if (storageMgr.readRecordAt(DEFAULT_PRAYER_TIMES_FILE, now.yday + 1, &tomorrow, BYTES_PER_DAY)) {
+                    nextPrayer = tomorrow.times[0];
+                }
             }
-            
+
             if (nextPrayer != -1) {
-                int minuteBeforePrayer = nextPrayer - (WIFI_ON_BEFORE_PRAYER / 60000);
-                
-                // Turn on WiFi 2 minutes before prayer
+                int minuteBeforePrayer = nextPrayer - (int)(WIFI_ON_BEFORE_PRAYER / 60000UL);
                 if (currentTotalMinutes == minuteBeforePrayer && !wifiAutoOnPending) {
-                    sysLogf(LOG_INFO, "SYSTEM", "Prayer in 2 minutes - Starting WiFi auto-on (retry up to %d times)", MAX_WIFI_RETRIES);
+                    appLogf(APP_LOG_INFO, "SYS", "wifi_auto_on reason=pre_prayer in_min=2");
                     wifiAutoOnPending = true;
                     wifiConnectRetries = 0;
                     wifiAutoOnTime = millis();
-                    if (!wifiIsOn) {
-                        toggleWiFi();
-                    }
+                    if (!wifiIsOn) toggleWiFi();
                 }
-                
-                // Retry WiFi connection if not connected
                 if (wifiAutoOnPending && !wifiIsOn) {
                     if (millis() - wifiAutoOnTime > 10000 && wifiConnectRetries < MAX_WIFI_RETRIES) {
                         wifiConnectRetries++;
-                        sysLogf(LOG_INFO, "SYSTEM", "WiFi retry %d/%d", wifiConnectRetries, MAX_WIFI_RETRIES);
+                        appLogf(APP_LOG_INFO, "SYS", "wifi_retry n=%d max=%d", wifiConnectRetries, MAX_WIFI_RETRIES);
                         wifiAutoOnTime = millis();
                         toggleWiFi();
                     } else if (wifiConnectRetries >= MAX_WIFI_RETRIES) {
-                        sysLog(LOG_WARN, "SYSTEM", "WiFi auto-on failed after retries, giving up");
+                        appLog(APP_LOG_WARN, "SYS", "wifi_auto_on_failed");
                         wifiAutoOnPending = false;
                     }
                 }
-                
-                // Turn off WiFi 5 minutes after prayer starts (if autoWifiOffEnabled)
                 if (wifiAutoOnPending && wifiIsOn && currentTotalMinutes >= nextPrayer) {
-                    unsigned long prayerTimeMs = (currentTotalMinutes - nextPrayer) * 60000 + (adjustedTime->tm_sec * 1000);
+                    unsigned long prayerTimeMs = (unsigned long)(currentTotalMinutes - nextPrayer) * 60000UL
+                                                 + (unsigned long)now.second * 1000UL;
                     if (prayerTimeMs >= WIFI_AUTO_DURATION_AFTER_AZAN && autoWifiOffEnabled) {
-                        sysLog(LOG_INFO, "SYSTEM", "5 minutes after prayer - Auto-disabling WiFi");
+                        appLog(APP_LOG_INFO, "SYS", "wifi_auto_off reason=post_prayer");
                         toggleWiFi();
                         wifiAutoOnPending = false;
                         wifiConnectRetries = 0;
@@ -752,118 +724,22 @@ void loop() {
             }
         }
     }
-    
-    // --- LEGACY: AUTO WI-FI OFF AFTER AZAN FINISHES (kept for compatibility) ---
-    bool currentAudioRunning = audioMgr.isRunning();
-    wasAudioPlaying = currentAudioRunning;
-    
-    unsigned long currentMs = millis();
-    
-    // --- PRINT CURRENT TIME EVERY SECOND ---
-    if (currentMs - lastSecondPrint >= 1000) {
-        lastSecondPrint = currentMs;
-        struct tm timeinfo;
-        if (getLocalTime(&timeinfo)) {
-            bool audioRunning = audioMgr.isRunning();
-            sysLogf(LOG_DEBUG, "TIME", "Current: %02d:%02d:%02d | Audio: %s (State: %s)", 
-                   timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec,
-                   isAudioPlaying ? "PLAYING" : "IDLE",
-                   audioRunning ? "RUNNING" : "STOPPED");
-        }
-    }
-    
-    // --- PRINT HEALTH STATUS AND TIME TO NEXT PRAYER EVERY 10 SECONDS ---
-    if (currentMs - last10SecPrint >= 10000) {
-        last10SecPrint = currentMs;
-        printHealthStatus();
-        int timeToNext = getTimeToNextPrayer();
-        if (timeToNext >= 0) {
-            sysLogf(LOG_INFO, "PRAYER", "Time to next prayer: %d minutes", timeToNext);
-        }
-    }
-    
-    static unsigned long lastCheckTime = 0;
-    if (millis() - lastCheckTime > 4000) {
-        lastCheckTime = millis();
-        checkAndPlayAzan();    
-    }
-    yield();
-}
 
-void checkAndPlayAzan() {
-    static int lastCheckedMinute = -1;
-    struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) return;
-
-    time_t rawtime = mktime(&timeinfo);
-    rawtime += (timeOffsetMinutes * 60);
-    struct tm *adjustedTime = localtime(&rawtime);
-
-    int day = adjustedTime->tm_yday + 1;
-    if (adjustedTime->tm_min == lastCheckedMinute) return;
-    lastCheckedMinute = adjustedTime->tm_min;
-
-    int currentTotalMinutes = adjustedTime->tm_hour * 60 + adjustedTime->tm_min;
-
-    // --- CACHE PRAYER TIMES (only read from SD once per day) ---
-    if (cachedPrayerDay != day || !cachedPrayerTimesValid) {
-        if (!getDayRecordFromBin(day, cachedPrayerTimes)) {
-            sysLog(LOG_WARN, "PRAYER", "Could not read prayer times from binary file");
-            cachedPrayerTimesValid = false;
-            return;
-        }
-        cachedPrayerDay = day;
-        cachedPrayerTimesValid = true;
-        sysLogf(LOG_DEBUG, "PRAYER", "✓ Prayer times cached for day %d (Fajr: %s)", 
-               day, minutesToTime(cachedPrayerTimes.times[0]).c_str());
-    }
-
-    int fajrMinutes = cachedPrayerTimes.times[0];
-    int preFajrTarget = fajrMinutes - 30;
-
-    // --- PRE-FAJR ALARM CHECK ---
-    if (preFajrEnabled && currentTotalMinutes == preFajrTarget && lastPreFajrDay != day) {
-        sysLogf(LOG_INFO, "PRAYER", "PRE-FAJR ALARM triggered (30 min before Fajr at %s)", 
-               minutesToTime(fajrMinutes).c_str());
-        playAudioFile(activeAzanPath());
-        isAudioPlaying = true;
-        audioStartTime = millis();
-        currentPlayingFile = activeAzanPath();
-        lastPreFajrDay = day;
-        lastMinutePrayed = currentTotalMinutes;
-        return; 
-    }
-
-    const char* prayerNames[] = {"FAJR", "DUHA", "DHUHR", "ASR", "MAGHRIB", "ISHA"};
-    
-    // --- REGULAR PRAYER TIMES CHECK (skip DUHA at index 1 - it's informational only) ---
-    for (int i = 0; i < 6; i++) {
-        // Skip DUHA (index 1) - it's only when Fajr ends, not a prayer time to alarm
-        if (i == 1) continue;
-        
-        if (currentTotalMinutes == cachedPrayerTimes.times[i]) {
-            sysLogf(LOG_INFO, "PRAYER", "Prayer time started: %s (%s)", 
-                   prayerNames[i], minutesToTime(cachedPrayerTimes.times[i]).c_str());
-            
-            playAudioFile(activeAzanPath());
-            
-            isAudioPlaying = true;
-            audioStartTime = millis();
-            currentPlayingFile = activeAzanPath();
-            lastMinutePrayed = currentTotalMinutes;
-            break;
-        }
-    }
-    
-    // --- CHECK IF AUDIO FINISHED PLAYING ---
-    bool currentAudioRunningState = audioMgr.isRunning();
-    if (isAudioPlaying && lastAudioRunningState && !currentAudioRunningState) {
+    bool audioRunning = audioMgr.isRunning();
+    if (isAudioPlaying && wasAudioPlaying && !audioRunning) {
         isAudioPlaying = false;
-        unsigned long duration = millis() - audioStartTime;
-        sysLogf(LOG_INFO, "AUDIO", "Azan finished playing. Duration: %lu ms. File: %s", 
-               duration, currentPlayingFile);
+        appLogf(APP_LOG_INFO, "AUDIO", "azan_done duration_ms=%lu file=%s",
+                (unsigned long)(millis() - audioStartTime),
+                currentPlayingFile[0] ? currentPlayingFile : "n/a");
     }
-    lastAudioRunningState = currentAudioRunningState;
+    wasAudioPlaying = audioRunning;
+
+    if (millis() - lastHealthLogMs >= 60000) {
+        lastHealthLogMs = millis();
+        printHealthStatus();
+    }
+
+    yield();
 }
 
 void handleDebugConsole() {
@@ -875,16 +751,24 @@ void handleDebugConsole() {
         if (input == "STATUS") {
             printStatus();
         }
-        else if (input == "OFFSET:0") { 
-            timeOffsetMinutes = 0; 
-            sysLog(LOG_INFO, "DEBUG", "Time offset reset to 0");
-            printStatus(); 
+        else if (input == "OFFSET:0") {
+            timeOffsetMinutes = 0;
+            syncDebugOffset();
+            appLog(APP_LOG_INFO, "CMD", "virt_offset_min=0");
+            printStatus();
         }
         else if (input.startsWith("+") || input.startsWith("-")) {
             int oldOffset = timeOffsetMinutes;
             timeOffsetMinutes += input.toInt();
-            sysLogf(LOG_DEBUG, "DEBUG", "Time offset changed: %d -> %d minutes", oldOffset, timeOffsetMinutes);
+            syncDebugOffset();
+            appLogf(APP_LOG_INFO, "CMD", "virt_offset_min=%d delta=%d", timeOffsetMinutes, timeOffsetMinutes - oldOffset);
             printStatus();
+        }
+        else if (input == "PRAYERLOG") {
+            prayerSched.logSchedule();
+        }
+        else if (input == "CLKDIAG") {
+            timeMgr.update();
         }
         else if (input == "LISTFILES") {
             sysLog(LOG_INFO, "DEBUG", "Listing audio files and their status:");
@@ -932,50 +816,39 @@ void handleDebugConsole() {
         }
         else {
             sysLogf(LOG_WARN, "DEBUG", "Unknown command: '%s'", input.c_str());
-            sysLog(LOG_INFO, "DEBUG", "Available commands:");
-            sysLog(LOG_INFO, "DEBUG", "  STATUS - Show system status");
-            sysLog(LOG_INFO, "DEBUG", "  OFFSET:0 - Reset time offset");
-            sysLog(LOG_INFO, "DEBUG", "  +N/-N - Adjust time offset");
-            sysLog(LOG_INFO, "DEBUG", "  LISTFILES - List configured audio files");
-            sysLog(LOG_INFO, "DEBUG", "  SDLS - List all files on SD card");
-            sysLog(LOG_INFO, "DEBUG", "  PLAYTEST:filename - Test audio playback");
-            sysLog(LOG_INFO, "DEBUG", "  AUDIOINFO - Show audio library status");
-            sysLog(LOG_INFO, "DEBUG", "  WIFI_ON - Turn WiFi ON for debug");
-            sysLog(LOG_INFO, "DEBUG", "  AUTO_WIFI_OFF_TOGGLE - Toggle auto WiFi off feature");
+            appLog(APP_LOG_INFO, "CMD", "help: STATUS OFFSET:0 +N/-N PRAYERLOG CLKDIAG LISTFILES SDLS PLAYTEST:x WIFI_ON AUTO_WIFI_OFF_TOGGLE");
         }
     }
 }
 
 void printStatus() {
-    struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) {
-        sysLog(LOG_ERROR, "STATUS", "Failed to get time from system");
+    PrayerNow now{};
+    if (!timeMgr.getPrayerNow(now) || !now.valid) {
+        appLog(APP_LOG_ERROR, "STAT", "clock_unavailable");
         return;
     }
 
-    time_t rawtime = mktime(&timeinfo);
-    rawtime += (timeOffsetMinutes * 60);
-    struct tm *adj = localtime(&rawtime);
-    int day = adj->tm_yday + 1;
+    struct tm sysTm{};
+    bool sysOk = timeMgr.readSystemTime(sysTm);
+    char sysBuf[12] = "n/a";
+    if (sysOk) TimeManager::formatTm(sysTm, sysBuf, sizeof(sysBuf));
 
-    sysLog(LOG_INFO, "STATUS", "========== SYSTEM STATUS ==========");
-    sysLogf(LOG_INFO, "STATUS", "Real time: %02d:%02d:%02d | Time offset: %d min", 
-           timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, timeOffsetMinutes);
-    sysLogf(LOG_INFO, "STATUS", "Virtual time: %02d:%02d:%02d | Day of year: %d", 
-           adj->tm_hour, adj->tm_min, adj->tm_sec, day);
-    const char* clk = timeMgr.rtcUsable() ? "RTC" : (timeMgr.activeSource() == TimeManager::Source::Ntp ? "NTP" : "NONE");
-    sysLogf(LOG_INFO, "STATUS", "Wi-Fi: %s | SD Card: %s | Audio: %s | Clock: %s", 
-           wifiIsOn ? "ON" : "OFF", 
-           storageMgr.isReady() ? "OK" : "ERROR", 
-           isAudioPlaying ? "PLAYING" : "IDLE",
-           clk);
-    if (timeMgr.rtcBatterySuspect()) {
-        sysLog(LOG_WARN, "STATUS", "RTC battery suspect — replace CR2032 when possible");
+    appLogf(APP_LOG_INFO, "STAT",
+            "rtc_clock=%02d:%02d:%02d virt_off=%d yday=%d sys=%s drift_sec=%d",
+            now.hour, now.minute, now.second, now.debugOffsetMinutes, now.yday,
+            sysBuf, timeMgr.getSystemDriftSec());
+    appLogf(APP_LOG_INFO, "STAT", "wifi=%s sd=%s audio=%s src=%s prefajr=%s azan=%s",
+            wifiIsOn ? "on" : "off",
+            storageMgr.isReady() ? "ok" : "fail",
+            isAudioPlaying ? "play" : "idle",
+            timeMgr.rtcUsable() ? "RTC"
+                    : (timeMgr.activeSource() == TimeManager::Source::NtpFallback ? "NTP" : "NONE"),
+            preFajrEnabled ? "on" : "off",
+            activeAzanPath());
+    int next = prayerSched.minutesToNextPrayer();
+    if (next >= 0) {
+        appLogf(APP_LOG_INFO, "STAT", "next_prayer_in_min=%d", next);
     }
-    sysLogf(LOG_INFO, "STATUS", "Pre-Fajr: %s | Current Azan: %s", 
-           preFajrEnabled ? "ENABLED" : "DISABLED",
-           azanFiles[currentAzanIndex]);
-    sysLog(LOG_INFO, "STATUS", "===============================");
 }
 
 bool getDayRecordFromBin(int day, DayRecord &record) {
@@ -994,74 +867,29 @@ String minutesToTime(int totalMinutes) {
 
 // --- HEALTH STATUS MONITORING ---
 void printHealthStatus() {
-    struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) {
-        sysLog(LOG_WARN, "HEALTH", "Failed to get time");
-        return;
-    }
-
-    // --- MEMORY USAGE ---
     uint32_t freeHeap = ESP.getFreeHeap();
     uint32_t totalHeap = ESP.getHeapSize();
-    uint8_t heapUsagePercent = (100 * (totalHeap - freeHeap)) / totalHeap;
-    
-    // --- WiFi RSSI if connected ---
+    uint8_t heapPct = totalHeap ? (uint8_t)((100 * (totalHeap - freeHeap)) / totalHeap) : 0;
+
     int rssi = -120;
-    const char* wifiStatus = "OFF";
+    const char* wifiSt = "off";
     if (wifiIsOn && WiFi.status() == WL_CONNECTED) {
         rssi = WiFi.RSSI();
-        wifiStatus = "CONNECTED";
+        wifiSt = "connected";
     } else if (wifiIsOn) {
-        wifiStatus = "CONNECTING";
+        wifiSt = "connecting";
     }
-    
-    // --- Audio Status ---
+
     bool audioRunning = audioMgr.isRunning();
-    const char* audioStatus = isAudioPlaying ? (audioRunning ? "PLAYING" : "STOPPING") : "IDLE";
-    
-    // --- Build comprehensive health message ---
-    sysLogf(LOG_INFO, "HEALTH", 
-           "Heap: %lu/%lu (%u%%) | WiFi: %s (RSSI:%d)| SD: %s | File: %s",
-           freeHeap, totalHeap, heapUsagePercent, 
-           wifiStatus, rssi, audioStatus,       
-           storageMgr.isReady() ? "OK" : "FAIL",
-           currentPlayingFile);
-}
+    int next = prayerSched.minutesToNextPrayer();
 
-// --- GET TIME TO NEXT PRAYER ---
-int getTimeToNextPrayer() {
-    struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) return -1;
-
-    time_t rawtime = mktime(&timeinfo);
-    rawtime += (timeOffsetMinutes * 60);
-    struct tm *adjustedTime = localtime(&rawtime);
-
-    int day = adjustedTime->tm_yday + 1;
-    int currentTotalMinutes = adjustedTime->tm_hour * 60 + adjustedTime->tm_min;
-
-    // Use cached prayer times if available for today, otherwise read from file
-    DayRecord todayTimes;
-    if (cachedPrayerDay == day && cachedPrayerTimesValid) {
-        todayTimes = cachedPrayerTimes;
-    } else {
-        if (!getDayRecordFromBin(day, todayTimes)) return -1;
-    }
-
-    // Find next prayer (skip DUHA at index 1)
-    for (int i = 0; i < 6; i++) {
-        if (i == 1) continue; // Skip DUHA
-        if (todayTimes.times[i] > currentTotalMinutes) {
-            return (todayTimes.times[i] - currentTotalMinutes);
-        }
-    }
-
-    // If no prayer found today, check tomorrow
-    if (getDayRecordFromBin(day + 1, todayTimes)) {
-        return ((1440 - currentTotalMinutes) + todayTimes.times[0]);
-    }
-
-    return -1;
+    appLogf(APP_LOG_INFO, "HEALTH",
+            "heap_free=%lu heap_pct=%u wifi=%s rssi=%d sd=%s audio=%s rtc_age_ms=%lu drift_sec=%d next_min=%d",
+            (unsigned long)freeHeap, heapPct, wifiSt, rssi,
+            storageMgr.isReady() ? "ok" : "fail",
+            audioRunning ? "run" : "idle",
+            (unsigned long)timeMgr.getLastRtcReadAgeMs(),
+            timeMgr.getSystemDriftSec(), next);
 }
 
 // --- WRAPPER TO PLAY AUDIO WITH DETAILED LOGGING ---

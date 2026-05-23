@@ -19,7 +19,6 @@ struct AppServices {
 
     bool* wifiIsOn = nullptr;
     bool* isAudioPlaying = nullptr;
-    int* timeOffsetMinutes = nullptr;
 
     bool* preFajrEnabled = nullptr;
     uint8_t* currentVolume = nullptr;
