@@ -1,4 +1,5 @@
 #include "StorageJobQueue.h"
+#include "system/AzanSafeMode.h"
 #include <stdarg.h>
 #include <string.h>
 
@@ -40,6 +41,11 @@ bool StorageJobQueue::begin(StorageManager* storage, EmitFn emit, void* user, Lo
 
 bool StorageJobQueue::submit(const Job& job) {
     if (!_jobQ) return false;
+    if (!AzanSafeMode::allowStorageJobs()) {
+        logf(1, "submit REJECTED safe_mode type=%u path=%s",
+             (unsigned)job.type, job.path);
+        return false;
+    }
     Job copy = job;
     if (copy.requestId == 0) {
         copy.requestId = _nextId++;

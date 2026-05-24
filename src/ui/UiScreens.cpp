@@ -1,6 +1,7 @@
 #include "ui/UiScreens.h"
 #include "ui/UiTheme.h"
 #include "UIManager.h"
+#include "system/AzanSafeMode.h"
 
 #if defined(MINI_AZAN_UI_ENABLE) && MINI_AZAN_UI_ENABLE
 
@@ -544,6 +545,9 @@ void UiScreens::onEvent(const UiEventPayload& ev) {
 }
 
 void UiScreens::tickRefresh() {
+    if (!AzanSafeMode::allowLvglTickRefresh()) {
+        return;
+    }
     uint32_t now = millis();
     if (now - _lastRefreshMs < 1000) return;
     _lastRefreshMs = now;

@@ -31,7 +31,7 @@ private:
     lv_color_t* _buf1 = nullptr;
     int16_t _lastTouchX = 0;
     int16_t _lastTouchY = 0;
-    static constexpr int kBufLines = 40;
+    static constexpr int kBufLines = 20;
 };
 
 #endif

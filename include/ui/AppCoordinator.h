@@ -8,11 +8,14 @@
 #include "TimeManager.h"
 #include "AppTypes.h"
 
+class NetworkManager;
+
 struct AppServices {
     AudioManager* audio = nullptr;
     StorageManager* storage = nullptr;
     TimeManager* time = nullptr;
     StorageJobQueue* storageJobs = nullptr;
+    NetworkManager* network = nullptr;
 
     bool* wifiIsOn = nullptr;
     bool* isAudioPlaying = nullptr;
@@ -33,8 +36,6 @@ struct AppServices {
     int* cachedPrayerDay = nullptr;
     bool* cachedPrayerTimesValid = nullptr;
 
-    void (*toggleWifi)() = nullptr;
-    void (*playFile)(const char* path) = nullptr;
     void (*saveVolumeToNvs)(uint8_t) = nullptr;
     void (*savePreFajrToNvs)(bool) = nullptr;
     void (*saveAzanIndexToNvs)(uint8_t) = nullptr;

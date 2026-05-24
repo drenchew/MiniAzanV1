@@ -16,6 +16,10 @@
 #include "AppTypes.h"
 #include "SettingsStore.h"
 #include "StorageJobQueue.h"
+#include "system/NetworkManager.h"
+#include "system/SystemCoordinator.h"
+#include "system/AzanSafeMode.h"
+#include "system/MemoryGuard.h"
 #if !defined(MINI_AZAN_TOUCH_VALIDATION_MODE) || !MINI_AZAN_TOUCH_VALIDATION_MODE
 #include "ui/UiBridge.h"
 #include "ui/AppCoordinator.h"
@@ -55,6 +59,8 @@ AudioManager audioMgr;
 PrayerScheduler prayerSched;
 SettingsStore settingsStore;
 StorageJobQueue storageJobs;
+NetworkManager networkMgr;
+SystemCoordinator sysCoord;
 
 #if !defined(MINI_AZAN_TOUCH_VALIDATION_MODE) || !MINI_AZAN_TOUCH_VALIDATION_MODE
 UiBridge uiBridge;
@@ -418,43 +424,7 @@ static void debugSdLogLine(const char* line);
 
 // --- SAFE WIFI TOGGLE FUNCTION ---
 void toggleWiFi() {
-    if (wifiIsOn) {
-        sysLog(LOG_INFO, "WIFI", "Turning OFF (freeing memory and energy)...");
-        server.end();
-        WiFi.disconnect(); // Don't forget router cache - faster reconnect
-        delay(150);
-        WiFi.mode(WIFI_OFF);
-        wifiIsOn = false;
-        timeMgr.setWifiConnected(false);
-        sysLog(LOG_INFO, "WIFI", "Wi-Fi turned OFF");
-    } else {
-        sysLog(LOG_INFO, "WIFI", "Turning ON...");
-        WiFi.mode(WIFI_STA);
-        WiFi.setSleep(false); // Disable power saving for faster/more stable connection
-        WiFi.begin(ssid, password);
-        
-        int attempts = 0;
-        while (WiFi.status() != WL_CONNECTED && attempts < 15) {
-            delay(500);
-            Serial.print(".");
-            attempts++;
-        }
-        
-        if (WiFi.status() == WL_CONNECTED) {
-            sysLog(LOG_INFO, "WIFI", "Connected!");
-            sysLogf(LOG_INFO, "WIFI", "Web interface: http://%s", WiFi.localIP().toString().c_str());
-            server.begin();
-            // Only sync time if WiFi is actually connected
-            timeMgr.setWifiConnected(true);
-            timeMgr.requestNtpSync();
-            wifiIsOn = true;
-        } else {
-            sysLog(LOG_WARN, "WIFI", "Connection failed. Staying OFF");
-            WiFi.disconnect();
-            WiFi.mode(WIFI_OFF);
-            wifiIsOn = false;
-        }
-    }
+    networkMgr.requestToggle();
 }
 
 void setup() {
@@ -562,8 +532,7 @@ void setup() {
     svc.cachedPrayerDay = &cachedPrayerDay;
     svc.cachedPrayerTimesValid = &cachedPrayerTimesValid;
     svc.storageJobs = &storageJobs;
-    svc.toggleWifi = toggleWiFi;
-    svc.playFile = playAudioFile;
+    svc.network = &networkMgr;
     svc.saveVolumeToNvs = saveVolumeToNVS;
     svc.savePreFajrToNvs = savePreFajrToNVS;
     svc.saveAzanIndexToNvs = saveAzanIndexToNVS;
@@ -573,9 +542,21 @@ void setup() {
     svc.uiSelectedAzanPathSize = sizeof(uiSelectedAzan);
     svc.readDayRecord = readDayRecordBridge;
     appCoord.begin(uiBridge, svc);
+
+    NetworkManager::Config netCfg{};
+    netCfg.ssid = ssid;
+    netCfg.password = password;
+    networkMgr.begin(server, timeMgr, netCfg,
+                     [](bool on, void*) { wifiIsOn = on; }, nullptr);
+    networkMgr.setInitialConnected(wifiIsOn);
+
+    SystemCoordinator::Config scCfg{};
+    sysCoord.begin(uiBridge, appCoord, timeMgr, prayerSched, networkMgr, scCfg);
+
     if (uiMgr.begin(uiBridge)) {
         sysLog(LOG_INFO, "UI", "LVGL UI enabled");
     }
+    MemoryGuard::logHeapStatus("BOOT");
 #else
     if (!touchOverlay.begin()) {
         sysLog(LOG_ERROR, "TVAL", "Touch validation overlay failed");
@@ -587,7 +568,7 @@ void setup() {
     // Регистрираме рутовете само веднъж тук
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){ request->send_P(200, "text/html", index_html); });
     server.on("/stop", HTTP_GET, [](AsyncWebServerRequest *request){
-        audioMgr.stop();
+        audioMgr.requestStop();
         sysLog(LOG_INFO, "WEB", "STOP command received");
         isAudioPlaying = false;
         request->send(200, "text/plain", "Stopped");
@@ -652,6 +633,10 @@ void setup() {
     
     // --- LIST FILES API ---
     server.on("/list-files-api", HTTP_GET, [](AsyncWebServerRequest *request){
+        if (AzanSafeMode::isActive()) {
+            request->send(503, "application/json", "{\"files\":[],\"busy\":true}");
+            return;
+        }
         String json;
         storageMgr.listRootFilesJson(json);
         sysLogf(LOG_DEBUG, "WEB", "Listed files - JSON size: %d bytes", json.length());
@@ -668,6 +653,10 @@ void setup() {
         String filename = request->getParam("name")->value();
         sysLogf(LOG_INFO, "WEB", "Delete requested: %s", filename.c_str());
         
+        if (AzanSafeMode::isActive()) {
+            request->send(503, "application/json", "{\"success\":false,\"error\":\"azan_playing\"}");
+            return;
+        }
         if (storageMgr.removeFile(filename.c_str())) {
             sysLogf(LOG_INFO, "WEB", "File deleted: %s", filename.c_str());
             request->send(200, "application/json", "{\"success\":true}");
@@ -683,10 +672,11 @@ void setup() {
 }
 
 void loop() {
-    timeMgr.update();
 #if !defined(MINI_AZAN_TOUCH_VALIDATION_MODE) || !MINI_AZAN_TOUCH_VALIDATION_MODE
-    appCoord.poll();
+    wifiIsOn = networkMgr.isOn();
     uiMgr.poll();
+#else
+    timeMgr.update();
 #endif
     handleDebugConsole();
 #if defined(MINI_AZAN_TOUCH_VALIDATION_MODE) && MINI_AZAN_TOUCH_VALIDATION_MODE
@@ -710,8 +700,6 @@ void loop() {
         autoWifiShutdownDone = true;
     }
     
-    prayerSched.update();
-
     PrayerNow now{};
     if (timeMgr.getPrayerNow(now) && now.valid) {
         int currentTotalMinutes = now.totalMinutes;
@@ -949,7 +937,9 @@ void printHealthStatus() {
 
 // --- WRAPPER TO PLAY AUDIO WITH DETAILED LOGGING ---
 void playAudioFile(const char* filePath) {
-    if (!audioMgr.playFromSd(filePath)) {
+    if (audioMgr.requestPlay(filePath)) {
+        isAudioPlaying = true;
+    } else {
         isAudioPlaying = false;
     }
 }

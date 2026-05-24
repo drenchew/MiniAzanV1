@@ -1,6 +1,8 @@
 #include "ui/AppCoordinator.h"
 #include "AppTypes.h"
 #include "AppLog.h"
+#include "system/AzanSafeMode.h"
+#include "system/NetworkManager.h"
 #include <WiFi.h>
 
 static void sdJobLogAdapter(int level, const char* tag, const char* msg) {
@@ -36,7 +38,7 @@ void AppCoordinator::emit(const UiEventPayload& ev) {
 }
 
 void AppCoordinator::handleStopAudio() {
-    if (_svc.audio) _svc.audio->stop();
+    if (_svc.audio) _svc.audio->requestStop();
     if (_svc.isAudioPlaying) *_svc.isAudioPlaying = false;
     UiEventPayload ev{};
     ev.type = UiEvent::AudioState;
@@ -51,7 +53,7 @@ void AppCoordinator::handleSetVolumePct(uint8_t pct) {
     if (v < _svc.minVolume) v = _svc.minVolume;
   if (v > _svc.maxVolume) v = _svc.maxVolume;
     *_svc.currentVolume = v;
-    if (_svc.audio) _svc.audio->setVolume(v);
+    if (_svc.audio) _svc.audio->requestSetVolume(v);
     if (_svc.saveVolumeToNvs) _svc.saveVolumeToNvs(v);
     UiEventPayload ev{};
     ev.type = UiEvent::VolumeState;
@@ -81,8 +83,9 @@ void AppCoordinator::handleAzanIndex(uint8_t idx) {
 }
 
 void AppCoordinator::handleToggleWifi() {
-    if (_svc.toggleWifi) _svc.toggleWifi();
-    if (_svc.saveWifiLastToNvs && _svc.wifiIsOn) _svc.saveWifiLastToNvs(*_svc.wifiIsOn);
+    if (_svc.network) {
+        _svc.network->requestToggle();
+    }
     handleRequestWifiStatus();
     handleRequestSystemStatus();
 }
@@ -199,14 +202,20 @@ void AppCoordinator::handleSelectAzanFile(const char* path) {
 
 void AppCoordinator::handlePlayFile(const char* path) {
     if (!path || !path[0]) return;
-    if (storageBlocked()) {
+    if (storageBlocked() || AzanSafeMode::isActive()) {
         UiEventPayload ev{};
         ev.type = UiEvent::StorageBusy;
         emit(ev);
         return;
     }
-    if (_svc.audio) _svc.audio->stop();
-    if (_svc.playFile) _svc.playFile(path);
+    if (_svc.audio) {
+        _svc.audio->requestStop();
+        if (_svc.audio->requestPlay(path)) {
+            if (_svc.isAudioPlaying) {
+                *_svc.isAudioPlaying = true;
+            }
+        }
+    }
     UiEventPayload ev{};
     ev.type = UiEvent::AudioState;
     ev.audioPlaying = _svc.isAudioPlaying && *_svc.isAudioPlaying;
