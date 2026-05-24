@@ -29,8 +29,10 @@ private:
     lv_disp_t* _disp = nullptr;
     lv_indev_t* _indev = nullptr;
     lv_color_t* _buf1 = nullptr;
+    lv_color_t* _buf2 = nullptr;  ///< second DMA buffer for double-buffering
     int16_t _lastTouchX = 0;
     int16_t _lastTouchY = 0;
+    // kBufLines MUST match MemCfg::LVGL_DRAW_LINES in MemoryManager.h
     static constexpr int kBufLines = 20;
 };
 

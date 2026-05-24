@@ -4,6 +4,7 @@
 
 #include "AppLog.h"
 #include "SpiArchitecture.h"
+#include "system/MemoryManager.h"   // gLvglDrawBufA/B — static DMA buffers
 
 #ifndef MINI_AZAN_TOUCH_DEBUG
 #define MINI_AZAN_TOUCH_DEBUG 0
@@ -79,14 +80,25 @@ bool UiPanel::begin(int width, int height) {
 
     lv_init();
 
-    const size_t bufPixels = (size_t)width * kBufLines;
-    _buf1 = (lv_color_t*)heap_caps_malloc(bufPixels * sizeof(lv_color_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    if (!_buf1) {
-        appLog(APP_LOG_ERROR, "UI", "lvgl draw buffer alloc failed");
-        return false;
-    }
+    // ── Static DMA draw buffers (no heap_caps_malloc) ─────────────────────────
+    // gLvglDrawBufA/B are preallocated in DRAM BSS by MemoryManager.
+    // DRAM_ATTR + alignas(4) in MemoryManager.cpp provides the same guarantee
+    // as MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL without runtime heap involvement.
+    // Double-buffering: LVGL renders to bufB while bufA is being DMA-flushed.
+    static_assert(MemCfg::LVGL_DRAW_LINES == kBufLines,
+                  "MemCfg::LVGL_DRAW_LINES must equal UiPanel::kBufLines");
 
-    lv_disp_draw_buf_init(&_drawBuf, _buf1, nullptr, (uint32_t)bufPixels);
+    _buf1 = reinterpret_cast<lv_color_t*>(gLvglDrawBufA);
+    _buf2 = reinterpret_cast<lv_color_t*>(gLvglDrawBufB);
+
+    const uint32_t bufPixels = static_cast<uint32_t>(MemCfg::LVGL_DRAW_PIXELS);
+    lv_disp_draw_buf_init(&_drawBuf, _buf1, _buf2, bufPixels);
+
+    appLogf(APP_LOG_INFO, "UI",
+            "lvgl draw bufs: A=0x%08x  B=0x%08x  px=%u  (static BSS, no heap)",
+            (unsigned)reinterpret_cast<uintptr_t>(_buf1),
+            (unsigned)reinterpret_cast<uintptr_t>(_buf2),
+            (unsigned)bufPixels);
 
     lv_disp_drv_init(&_dispDrv);
     _dispDrv.hor_res = (lv_coord_t)width;

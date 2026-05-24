@@ -18,6 +18,7 @@
 #include "system/SystemCoordinator.h"
 #include "system/AzanSafeMode.h"
 #include "system/MemoryGuard.h"
+#include "system/MemoryManager.h"
 #if !defined(MINI_AZAN_TOUCH_VALIDATION_MODE) || !MINI_AZAN_TOUCH_VALIDATION_MODE
 #include "ui/UiBridge.h"
 #include "ui/AppCoordinator.h"
@@ -227,6 +228,10 @@ static void debugSdLogLine(const char* line);
 void setup() {
     Serial.begin(115200);
     delay(1000);
+
+    // ── Pool allocator boot — MUST be first; eliminates all runtime heap use ──
+    MemoryManager::begin();
+
     WiFi.mode(WIFI_OFF);
     sysLog(LOG_INFO, "SYSTEM", "=== STARTING AZAN SYSTEM (OFFLINE MODE) ===");
 #if defined(MINI_AZAN_TOUCH_VALIDATION_MODE) && MINI_AZAN_TOUCH_VALIDATION_MODE
@@ -431,6 +436,9 @@ void handleDebugConsole() {
         }
         else if (input == "MEM") {
             MemoryGuard::logHeapStatus("DEBUG");
+        }
+        else if (input == "POOLSTATS") {
+            MemoryManager::logStats("DEBUG");
         }
         else {
             sysLogf(LOG_WARN, "DEBUG", "Unknown command: '%s'", input.c_str());
