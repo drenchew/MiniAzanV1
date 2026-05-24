@@ -33,6 +33,8 @@ public:
     /** Queue play (any task) — executed on AudioTask only. */
     bool requestPlay(const char* path);
     bool requestStop();
+    /** P0 fast lane: flush pending plays, wake AudioTask immediately. */
+    bool requestEmergencyStop();
     bool requestSetVolume(uint8_t volume);
 
     bool isRunning();

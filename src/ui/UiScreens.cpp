@@ -543,6 +543,22 @@ void UiScreens::onEvent(const UiEventPayload& ev) {
             }
             break;
 
+        case UiEvent::FileListStreamStart:
+            _streamCount = 0;
+            if (_listFiles) {
+                lv_obj_clean(_listFiles);
+            }
+            break;
+
+        case UiEvent::FileListStreamEntry:
+            if (_streamCount < 16 && ev.fileCount > 0) {
+                _streamFiles[_streamCount++] = ev.files[0];
+            }
+            break;
+
+        case UiEvent::FileListStreamEnd:
+            break;
+
         case UiEvent::FileListReady:
             populateFileList(ev);
             break;

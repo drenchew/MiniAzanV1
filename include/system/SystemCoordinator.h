@@ -5,8 +5,9 @@
 #include "TimeManager.h"
 #include "PrayerScheduler.h"
 #include "system/BluetoothManager.h"
+#include "system/AppScheduler.h"
 
-/** Core-1 application task: coordinator, time, prayer, BT poll. Never touches LVGL. */
+/** Core-1 SysCoord task — runs AppScheduler only (never LVGL). */
 class SystemCoordinator {
 public:
     struct Config {
@@ -18,17 +19,20 @@ public:
 
     bool begin(UiBridge& bridge, AppCoordinator& coord, TimeManager& time,
                PrayerScheduler& prayer, BluetoothManager& bt, const Config& cfg);
+    void setIsAudioPlayingPtr(bool* ptr);
     void poll();
 
 private:
     static void taskEntry(void* arg);
     void taskLoop();
 
+    AppScheduler _scheduler{};
     UiBridge* _bridge = nullptr;
     AppCoordinator* _coord = nullptr;
     TimeManager* _time = nullptr;
     PrayerScheduler* _prayer = nullptr;
     BluetoothManager* _bt = nullptr;
+    bool* _isAudioPlaying = nullptr;
     Config _cfg{};
     TaskHandle_t _task = nullptr;
 };

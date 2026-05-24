@@ -51,20 +51,20 @@ public:
         uint32_t size = 0;
     };
 
+    /**
+     * Stream one file entry per call (iterator cursor advances on success).
+     * @return 1 entry, 0 end of directory, -1 busy/error, -2 paused (azan lock)
+     */
+    int listNextFile(const char* dirPath, int& cursor, DirEntry& out, int* totalOut = nullptr);
+
+    /** @deprecated Use listNextFile streaming API from SDJob only. */
     bool listRootFilesJson(String& jsonOut);
-    /** List files in a directory (e.g. /azan, /quran). Returns JSON {"files":[...]}. */
     bool listDirectoryJson(const char* dirPath, String& jsonOut);
 
-    /**
-     * Low-stack directory listing for SDJob worker (no String/JSON).
-     * @return entries filled, or -1 on busy/lock failure
-     */
     int listDirectoryPage(const char* dirPath, DirEntry* out, int maxEntries, int skip,
                           int* totalOut);
 
     int listRootFilesDebug(void (*logLine)(const char* line));
-
-private:
     bool takeLock(TickType_t timeout, bool ignorePlaybackLock = false);
     void giveLock();
     void logf(int level, const char* tag, const char* fmt, ...) const;

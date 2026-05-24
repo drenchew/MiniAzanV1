@@ -313,6 +313,7 @@ void setup() {
 
     SystemCoordinator::Config scCfg{};
     sysCoord.begin(uiBridge, appCoord, timeMgr, prayerSched, bluetoothMgr, scCfg);
+    sysCoord.setIsAudioPlayingPtr(&isAudioPlaying);
 
     if (uiMgr.begin(uiBridge)) {
         sysLog(LOG_INFO, "UI", "LVGL UI enabled");

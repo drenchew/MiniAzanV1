@@ -4,6 +4,7 @@
 #include "system/AzanSafeMode.h"
 #include "system/BluetoothManager.h"
 #include "system/BluetoothTransferJob.h"
+#include "system/SchedPriority.h"
 
 static void sdJobLogAdapter(int level, const char* tag, const char* msg) {
     appLog(level, tag, msg);
@@ -27,6 +28,103 @@ bool AppCoordinator::begin(UiBridge& bridge, const AppServices& svc) {
         _svc.storageJobs->begin(_svc.storage, storageEmitThunk, this, sdJobLogAdapter);
     }
     return _svc.audio && _svc.storage && _svc.time && _bridge;
+}
+
+uint8_t AppCoordinator::commandPriority(UiCmd cmd) {
+    switch (cmd) {
+        case UiCmd::StopAudio:
+            return SchedPriority::P0_Emergency;
+        case UiCmd::PlayFile:
+        case UiCmd::PauseAudio:
+        case UiCmd::ResumeAudio:
+            return SchedPriority::P1_RealTime;
+        case UiCmd::RequestClock:
+        case UiCmd::RequestPrayerTimes:
+            return SchedPriority::P2_SystemCore;
+        case UiCmd::ListFolder:
+        case UiCmd::ListAudioFiles:
+        case UiCmd::RefreshFileList:
+        case UiCmd::DeleteFile:
+            return SchedPriority::P4_HeavyIo;
+        default:
+            return SchedPriority::P3_UserAction;
+    }
+}
+
+void AppCoordinator::ingestCommands() {
+    if (!_bridge) return;
+    _deferredCount = 0;
+    UiCommand cmd{};
+    while (_deferredCount < kMaxDeferredCmds && _bridge->popCommand(cmd, 0)) {
+        _deferred[_deferredCount++] = cmd;
+    }
+}
+
+bool AppCoordinator::popDeferredAtPriority(uint8_t priorityBand, UiCommand& out) {
+    for (uint8_t i = 0; i < _deferredCount; i++) {
+        if (commandPriority(_deferred[i].cmd) == priorityBand) {
+            out = _deferred[i];
+            for (uint8_t j = i + 1; j < _deferredCount; j++) {
+                _deferred[j - 1] = _deferred[j];
+            }
+            _deferredCount--;
+            return true;
+        }
+    }
+    return false;
+}
+
+void AppCoordinator::executeEmergencyStop(bool* isAudioPlaying) {
+    if (_svc.audio) {
+        _svc.audio->requestEmergencyStop();
+    }
+    if (isAudioPlaying) {
+        *isAudioPlaying = false;
+    } else if (_svc.isAudioPlaying) {
+        *_svc.isAudioPlaying = false;
+    }
+    UiEventPayload ev{};
+    ev.type = UiEvent::AudioState;
+    ev.audioPlaying = false;
+    emit(ev);
+}
+
+void AppCoordinator::dispatchCommand(const UiCommand& cmd) {
+    switch (cmd.cmd) {
+        case UiCmd::StopAudio: handleStopAudio(); break;
+        case UiCmd::SetVolume: handleSetVolumePct(cmd.vol.volumePct); break;
+        case UiCmd::SetPreFajr: handlePreFajr(cmd.pf.enabled); break;
+        case UiCmd::SetAzanIndex: handleAzanIndex(cmd.az.index); break;
+        case UiCmd::ToggleTransferMode: handleToggleTransferMode(); break;
+        case UiCmd::RequestBluetoothStatus: handleRequestBluetoothStatus(); break;
+        case UiCmd::CancelBluetoothTransfer: handleCancelBluetoothTransfer(); break;
+        case UiCmd::RequestSystemStatus: handleRequestSystemStatus(); break;
+        case UiCmd::RequestClock: handleRequestClock(); break;
+        case UiCmd::RequestPrayerTimes: handleRequestPrayer(); break;
+        case UiCmd::ListAudioFiles: handleListAudioFiles(); break;
+        case UiCmd::ListFolder: handleListFolder(cmd.list.path, cmd.list.page); break;
+        case UiCmd::RefreshFileList: handleListFolder("/azan", 0); break;
+        case UiCmd::DeleteFile: handleDeleteFile(cmd.del.path); break;
+        case UiCmd::SelectAzanFile: handleSelectAzanFile(cmd.azanPath.path); break;
+        case UiCmd::PlayFile: handlePlayFile(cmd.play.path); break;
+        case UiCmd::PauseAudio:
+        case UiCmd::ResumeAudio:
+            break;
+        default: break;
+    }
+}
+
+void AppCoordinator::pollStorageResults() {
+    if (_svc.storageJobs) {
+        _svc.storageJobs->poll();
+    }
+}
+
+bool AppCoordinator::tickStorageWorker() {
+    if (!_svc.storageJobs) {
+        return false;
+    }
+    return _svc.storageJobs->tick();
 }
 
 bool AppCoordinator::storageBlocked() const {
@@ -246,10 +344,12 @@ void AppCoordinator::handlePlayFile(const char* path) {
 
 void AppCoordinator::handleListFolder(const char* path, uint8_t page) {
     if (!_svc.storageJobs) {
-        handleListFiles(false);
+        UiEventPayload ev{};
+        ev.type = UiEvent::StorageBusy;
+        emit(ev);
         return;
     }
-    if (storageBlocked()) {
+    if (storageBlocked() || !AzanSafeMode::allowStorageJobs()) {
         UiEventPayload ev{};
         ev.type = UiEvent::StorageBusy;
         emit(ev);
@@ -291,84 +391,8 @@ void AppCoordinator::handleDeleteFile(const char* path) {
     emit(ev);
 }
 
-void AppCoordinator::handleListFiles(bool audioOnly) {
-    if (storageBlocked()) {
-        UiEventPayload ev{};
-        ev.type = UiEvent::StorageBusy;
-        emit(ev);
-        return;
-    }
-    if (!_svc.storage || !_svc.storage->isReady()) {
-        UiEventPayload ev{};
-        ev.type = UiEvent::FileListReady;
-        ev.fileCount = 0;
-        emit(ev);
-        return;
-    }
-    String json;
-    if (!_svc.storage->listRootFilesJson(json)) {
-        UiEventPayload ev{};
-        ev.type = UiEvent::StorageBusy;
-        emit(ev);
-        return;
-    }
-    UiEventPayload ev{};
-    ev.type = UiEvent::FileListReady;
-    int start = json.indexOf('[');
-    int pos = start >= 0 ? start + 1 : 0;
-    while (ev.fileCount < 16 && pos < (int)json.length()) {
-        int nameKey = json.indexOf("\"name\":\"", pos);
-        if (nameKey < 0) break;
-        nameKey += 8;
-        int nameEnd = json.indexOf('"', nameKey);
-        if (nameEnd < 0) break;
-        String name = json.substring(nameKey, nameEnd);
-        int szKey = json.indexOf("\"size\":", nameEnd);
-        uint32_t sz = 0;
-        if (szKey >= 0) sz = (uint32_t)json.substring(szKey + 7).toInt();
-        bool isAudio = name.endsWith(".mp3") || name.endsWith(".wav") ||
-                       name.endsWith(".MP3") || name.endsWith(".WAV");
-        if (!audioOnly || isAudio) {
-            UiFileEntry& e = ev.files[ev.fileCount++];
-            name.toCharArray(e.name, sizeof(e.name));
-            e.size = sz;
-        }
-        pos = nameEnd + 1;
-    }
-    emit(ev);
-}
-
 void AppCoordinator::handleListAudioFiles() {
-    if (_svc.storageJobs) {
-        handleListFolder("/azan", 0);
-    } else {
-        handleListFiles(true);
-    }
-}
-
-void AppCoordinator::dispatch(const UiCommand& cmd) {
-    switch (cmd.cmd) {
-        case UiCmd::StopAudio: handleStopAudio(); break;
-        case UiCmd::SetVolume: handleSetVolumePct(cmd.vol.volumePct); break;
-        case UiCmd::SetPreFajr: handlePreFajr(cmd.pf.enabled); break;
-        case UiCmd::SetAzanIndex: handleAzanIndex(cmd.az.index); break;
-        case UiCmd::ToggleTransferMode: handleToggleTransferMode(); break;
-        case UiCmd::RequestBluetoothStatus: handleRequestBluetoothStatus(); break;
-        case UiCmd::CancelBluetoothTransfer: handleCancelBluetoothTransfer(); break;
-        case UiCmd::RequestSystemStatus: handleRequestSystemStatus(); break;
-        case UiCmd::RequestClock: handleRequestClock(); break;
-        case UiCmd::RequestPrayerTimes: handleRequestPrayer(); break;
-        case UiCmd::ListAudioFiles: handleListAudioFiles(); break;
-        case UiCmd::ListFolder: handleListFolder(cmd.list.path, cmd.list.page); break;
-        case UiCmd::RefreshFileList: handleListFolder("/azan", 0); break;
-        case UiCmd::DeleteFile: handleDeleteFile(cmd.del.path); break;
-        case UiCmd::SelectAzanFile: handleSelectAzanFile(cmd.azanPath.path); break;
-        case UiCmd::PlayFile: handlePlayFile(cmd.play.path); break;
-        case UiCmd::PauseAudio:
-        case UiCmd::ResumeAudio:
-            break;
-        default: break;
-    }
+    handleListFolder("/azan", 0);
 }
 
 void AppCoordinator::handleRequestBluetoothStatus() {
@@ -411,20 +435,4 @@ void AppCoordinator::handleRequestBluetoothStatus() {
         }
     }
     emit(ev);
-}
-
-void AppCoordinator::poll() {
-    if (!_bridge) return;
-
-    if (_svc.storageJobs) {
-        _svc.storageJobs->poll();
-    }
-
-    UiCommand cmd{};
-    while (_bridge->popUrgent(cmd, 0)) dispatch(cmd);
-    unsigned processed = 0;
-    while (processed < 4 && _bridge->popCommand(cmd, 0)) {
-        dispatch(cmd);
-        processed++;
-    }
 }

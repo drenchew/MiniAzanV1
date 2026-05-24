@@ -60,6 +60,8 @@ private:
 
     char _filePaths[16][72]{};
     uint8_t _filePathCount = 0;
+    UiFileEntry _streamFiles[16]{};
+    uint8_t _streamCount = 0;
     lv_obj_t* _prayerTimeLabels[5]{};
     lv_obj_t* _prayerCards[5]{};
 };

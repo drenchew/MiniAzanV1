@@ -39,6 +39,9 @@ enum class UiEvent : uint8_t {
     PreFajrState,
     AzanIndexState,
     FileListReady,
+    FileListStreamStart,
+    FileListStreamEntry,
+    FileListStreamEnd,
     FileOpResult,
     StorageBusy,
 };

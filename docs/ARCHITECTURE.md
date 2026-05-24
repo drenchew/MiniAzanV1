@@ -1,62 +1,67 @@
-# MiniAzan firmware architecture (offline-first)
+# MiniAzan — deterministic scheduler architecture
 
-## Design goals
+## Execution model
 
-- Reliable azan playback (audio-first)
-- LVGL UI on dedicated task, never blocking on SD or decode
-- Single SD owner (`StorageManager` + `StorageJobQueue`)
-- WiFi and web stack **removed** — `WiFi.mode(WIFI_OFF)` at boot
-- Future file transfer via **Bluetooth Classic SPP** (placeholder layer today)
-
-## Task layout
-
-| Task | Priority | Core | Role |
-|------|----------|------|------|
-| AudioTask | 5 | 0 | I2S MP3 decode only |
-| SDJob | 2 | 0 | Async list/delete on VSPI |
-| LVGL (UIManager) | 1 | 1 | Touch + screens |
-| SysCoord | 3 | 1 | Time, prayer, AppCoordinator, BT poll |
-
-## Data flow
+All work flows through **AppScheduler** on the SysCoord task (core 1, prio 3):
 
 ```
-LVGL → UiBridge (commands/events) → AppCoordinator
-                                          ├─ AudioManager.request*
-                                          ├─ StorageJobQueue.submit
-                                          └─ BluetoothManager (future xfer)
-
-Phone/PC → BluetoothManager → AppCoordinator → StorageJobQueue → StorageManager → SD
+LVGL → UiBridge → AppCoordinator ← AppScheduler::poll()
+                                      ├─ P0 STOP_AZAN (fast lane)
+                                      ├─ P1 audio commands
+                                      ├─ P2 RTC + prayer
+                                      ├─ P3 UI settings
+                                      └─ P4 SD tick + heavy IO
 ```
 
-No direct SD writes from Bluetooth callbacks (future).
+No module runs heavy I/O outside the scheduler except **AudioI2S** (P1 decode on core 0).
 
-## Azan safe mode
+## Priority bands (`SchedPriority.h`)
 
-While azan is playing:
+| Band | Name | Examples |
+|------|------|----------|
+| **P0** | Emergency | `STOP_AZAN` — bypasses deferred queue, `requestEmergencyStop()` |
+| **P1** | Real-time | `PlayFile`, audio stop/resume |
+| **P2** | System core | RTC update, prayer scheduler, clock/prayer UI refresh |
+| **P3** | User action | Volume, pre-Fajr, BT toggle, system status |
+| **P4** | Heavy IO | SD list/delete, cooperative `StorageJobQueue::tick()` |
 
-- New SD jobs rejected
-- Bluetooth transfer mode start rejected
-- Heavy home UI tick refresh skipped
+## Azan lock (`AzanSafeMode`)
 
-## Memory
+When azan is playing (`azan_lock = true`):
 
-Boot and azan start log via `MemoryGuard`:
+- Only **P0** and **P1** execute
+- SD jobs pause at cooperative checkpoints (`listNextFile` returns `-2`)
+- UI keeps rendering; storage commands return `StorageBusy`
+- Lock released only when audio stops (EOS or P0 stop)
 
-- `heap free`, `largest free block`, `task count`
-- MP3 start gated by `canStartMp3Decode()`
+## P0 STOP path
 
-## Modules (`include/system/`)
+```
+Home STOP button → UiBridge::postUrgent(StopAudio)
+  → AppScheduler::runP0FastLane()
+    → AppCoordinator::executeEmergencyStop()
+      → AudioManager::requestEmergencyStop()  // flush queue + notify AudioTask
+```
 
-| Module | Role |
-|--------|------|
-| `MemoryGuard` | Heap / largest-block / task count logging |
-| `AzanSafeMode` | Exclusive mode during playback |
-| `BluetoothManager` | Placeholder for SPP file transfer |
-| `BluetoothTransferJob` | Future chunked transfer state |
-| `SystemCoordinator` | Core-1 poll loop (no LVGL) |
+## Streaming SD (`StorageJobQueue`)
 
-## Removed (legacy)
+- **No separate SDJob FreeRTOS task** — cooperative state machine driven by P4 `tick()`
+- One file entry per tick via `StorageManager::listNextFile()`
+- Events: `FileListStreamStart` → `FileListStreamEntry`* → `FileListStreamEnd` + `FileListReady`
+- Pauses automatically during azan lock, resumes when lock clears
 
-- `ESPAsyncWebServer`, `AsyncTCP`
-- `NetworkManager`, embedded HTML, HTTP upload APIs
-- WiFi auto-connect, GPIO4 WiFi toggle, post-prayer WiFi automation
+## Deadlock prevention
+
+- Single SD owner: `StorageManager` mutex, no nested locks
+- UI never includes `StorageManager.h` for I/O
+- Audio holds playback lock only during decode
+- Scheduler never blocks on SD; SD never blocks on LVGL
+
+## Tasks
+
+| Task | Prio | Core | Role |
+|------|------|------|------|
+| AudioI2S | 5 | 0 | MP3 decode |
+| SysCoord | 3 | 1 | AppScheduler |
+| LVGL | 1 | 1 | Touch + screens |
+| Arduino loop | ~1 | 1 | Health log, serial debug |

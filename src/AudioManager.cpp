@@ -73,6 +73,22 @@ bool AudioManager::requestStop() {
     return xQueueSend(_cmdQ, &c, 0) == pdTRUE;
 }
 
+bool AudioManager::requestEmergencyStop() {
+    if (!_cmdQ) {
+        return false;
+    }
+    Command dummy{};
+    while (xQueueReceive(_cmdQ, &dummy, 0) == pdTRUE) {
+    }
+    Command c{};
+    c.type = CmdType::Stop;
+    const bool ok = xQueueSend(_cmdQ, &c, 0) == pdTRUE;
+    if (_task) {
+        xTaskNotifyGive(_task);
+    }
+    return ok;
+}
+
 bool AudioManager::requestSetVolume(uint8_t volume) {
     if (!_cmdQ) {
         return false;
@@ -179,6 +195,7 @@ void AudioManager::taskEntry(void* arg) {
 void AudioManager::taskLoop() {
     logf(LOG_DEBUG, "AUDIO", "I2S pump (VSPI SD decode only on this task)");
     while (true) {
+        ulTaskNotifyTake(pdTRUE, 0);
         drainCommands();
         _audio.loop();
         if (_playing && !_audio.isRunning()) {

@@ -156,6 +156,24 @@ int StorageManager::listDirectoryPage(const char* dirPath, DirEntry* out, int ma
     return filled;
 }
 
+int StorageManager::listNextFile(const char* dirPath, int& cursor, DirEntry& out,
+                                 int* totalOut) {
+    if (_playbackLocked) {
+        return -2;
+    }
+    DirEntry tmp[1];
+    const int n = listDirectoryPage(dirPath, tmp, 1, cursor, totalOut);
+    if (n < 0) {
+        return -1;
+    }
+    if (n == 0) {
+        return 0;
+    }
+    out = tmp[0];
+    cursor++;
+    return 1;
+}
+
 bool StorageManager::fileExists(const char* path) {
     String full = normalizePath(path);
     if (full.isEmpty()) return false;

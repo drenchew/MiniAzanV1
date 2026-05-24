@@ -6,14 +6,23 @@
 #include "ui/UiTypes.h"
 
 /**
- * Async SD worker (SDJob task). Never calls LVGL or UiBridge directly.
- * Results are queued and delivered via poll() on the main/coordinator thread.
+ * Cooperative SD worker (state machine). One incremental step per tick().
+ * Never calls LVGL or UiBridge directly — results drained in poll().
  */
 class StorageJobQueue {
 public:
     enum class JobType : uint8_t {
         ListDir = 0,
         DeleteFile,
+    };
+
+    enum class StreamPhase : uint8_t {
+        Idle = 0,
+        ListStart,
+        ListEntry,
+        ListEnd,
+        DeleteRun,
+        Paused,
     };
 
     struct Job {
@@ -24,15 +33,16 @@ public:
         uint32_t requestId = 0;
     };
 
-    /** Compact result posted from SDJob → drained in poll(). */
     struct JobResult {
         JobType type = JobType::ListDir;
+        StreamPhase phase = StreamPhase::Idle;
         uint32_t requestId = 0;
         bool ok = false;
         char folder[64]{};
         uint8_t fileCount = 0;
         uint8_t listTotal = 0;
         uint8_t listPage = 0;
+        UiFileEntry entry{};
         UiFileEntry files[16]{};
         char message[64]{};
     };
@@ -40,22 +50,24 @@ public:
     using EmitFn = void (*)(const UiEventPayload& ev, void* user);
     using LogFn = void (*)(int level, const char* tag, const char* message);
 
-    static constexpr uint32_t kWorkerStackWords = 4096;  /**< ~16 KB on ESP32 */
+    static constexpr uint32_t kWorkerStackWords = 3072;
 
     bool begin(StorageManager* storage, EmitFn emit, void* user, LogFn log = nullptr);
     bool submit(const Job& job);
-    bool isBusy() const { return _busy; }
+    bool isBusy() const { return _phase != StreamPhase::Idle; }
 
-    /** Call from main loop / AppCoordinator only — posts UiEvents. */
+    /** One cooperative step (SysCoord P4). Returns true if work remains. */
+    bool tick();
+
+    /** Drain result queue → UiEvents (SysCoord only). */
     void poll();
 
 private:
-    static void workerEntry(void* arg);
-    void workerLoop();
-    void processJob(const Job& job);
-    bool runListJob(const Job& job, JobResult& out);
-    bool runDeleteJob(const Job& job, JobResult& out);
+    void startJob(const Job& job);
+    bool tickList();
+    bool tickDelete();
     void pushResult(const JobResult& res);
+    void finishList(bool ok);
     void logMsg(int level, const char* msg) const;
     void logf(int level, const char* fmt, ...) const;
 
@@ -65,7 +77,12 @@ private:
     LogFn _log = nullptr;
     QueueHandle_t _jobQ = nullptr;
     QueueHandle_t _resultQ = nullptr;
-    TaskHandle_t _task = nullptr;
-    volatile bool _busy = false;
+
+    Job _active{};
+    StreamPhase _phase = StreamPhase::Idle;
+    int _listCursor = 0;
+    int _listTotal = 0;
+    uint8_t _batchCount = 0;
+    UiFileEntry _batch[16]{};
     uint32_t _nextId = 1;
 };

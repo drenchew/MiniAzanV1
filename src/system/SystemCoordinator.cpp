@@ -1,4 +1,5 @@
 #include "system/SystemCoordinator.h"
+#include "system/AppScheduler.h"
 #include "AppLog.h"
 
 bool SystemCoordinator::begin(UiBridge& bridge, AppCoordinator& coord, TimeManager& time,
@@ -10,6 +11,21 @@ bool SystemCoordinator::begin(UiBridge& bridge, AppCoordinator& coord, TimeManag
     _prayer = &prayer;
     _bt = &bt;
     _cfg = cfg;
+
+    AppScheduler::Services svc{};
+    svc.bridge = &bridge;
+    svc.coord = &coord;
+    svc.time = &time;
+    svc.prayer = &prayer;
+    svc.bluetooth = &bt;
+    svc.isAudioPlaying = _isAudioPlaying;
+
+    AppScheduler::Config scfg{};
+    scfg.periodMs = _cfg.periodMs;
+    if (!_scheduler.begin(svc, scfg)) {
+        appLog(APP_LOG_ERROR, "SYSCO", "AppScheduler init failed");
+        return false;
+    }
 
     BaseType_t ok = xTaskCreatePinnedToCore(
         taskEntry, "SysCoord", _cfg.taskStackWords, this,
@@ -23,11 +39,12 @@ bool SystemCoordinator::begin(UiBridge& bridge, AppCoordinator& coord, TimeManag
     return true;
 }
 
+void SystemCoordinator::setIsAudioPlayingPtr(bool* ptr) {
+    _isAudioPlaying = ptr;
+}
+
 void SystemCoordinator::poll() {
-    if (_time) _time->update();
-    if (_coord) _coord->poll();
-    if (_prayer) _prayer->update();
-    if (_bt) _bt->poll();
+    _scheduler.poll();
 }
 
 void SystemCoordinator::taskEntry(void* arg) {

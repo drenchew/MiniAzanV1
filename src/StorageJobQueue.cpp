@@ -13,36 +13,21 @@ bool StorageJobQueue::begin(StorageManager* storage, EmitFn emit, void* user, Lo
         _jobQ = xQueueCreate(4, sizeof(Job));
     }
     if (!_resultQ) {
-        _resultQ = xQueueCreate(4, sizeof(JobResult));
+        _resultQ = xQueueCreate(8, sizeof(JobResult));
     }
     if (!_jobQ || !_resultQ) {
         logMsg(0, "queue create failed");
         return false;
     }
 
-    if (!_task) {
-        BaseType_t ok = xTaskCreatePinnedToCore(
-            workerEntry,
-            "SDJob",
-            kWorkerStackWords,
-            this,
-            2,
-            &_task,
-            0);
-        if (ok != pdPASS) {
-            logMsg(0, "task create failed");
-            return false;
-        }
-    }
-
-    logf(2, "SDJob ready stack=%lu words", (unsigned long)kWorkerStackWords);
+    logf(2, "SDJob ready (cooperative state machine)");
     return _storage != nullptr && _emit != nullptr;
 }
 
 bool StorageJobQueue::submit(const Job& job) {
     if (!_jobQ) return false;
     if (!AzanSafeMode::allowStorageJobs()) {
-        logf(1, "submit REJECTED safe_mode type=%u path=%s",
+        logf(1, "submit REJECTED azan_lock type=%u path=%s",
              (unsigned)job.type, job.path);
         return false;
     }
@@ -53,14 +38,10 @@ bool StorageJobQueue::submit(const Job& job) {
 
     const bool ok = xQueueSend(_jobQ, &copy, 0) == pdTRUE;
     if (ok) {
-        logf(2, "submit id=%lu type=%u path=%s page=%u",
-             (unsigned long)copy.requestId,
-             (unsigned)copy.type,
-             copy.path,
-             (unsigned)copy.page);
+        logf(2, "submit id=%lu type=%u path=%s",
+             (unsigned long)copy.requestId, (unsigned)copy.type, copy.path);
     } else {
-        logf(1, "submit REJECTED queue full type=%u path=%s",
-             (unsigned)copy.type, copy.path);
+        logf(1, "submit REJECTED queue full type=%u", (unsigned)job.type);
     }
     return ok;
 }
@@ -88,114 +69,205 @@ void StorageJobQueue::pushResult(const JobResult& res) {
     }
 }
 
+void StorageJobQueue::startJob(const Job& job) {
+    _active = job;
+    _listCursor = 0;
+    _listTotal = 0;
+    _batchCount = 0;
+
+    if (job.type == JobType::ListDir) {
+        _phase = StreamPhase::ListStart;
+        logf(2, "start list id=%lu path=%s", (unsigned long)job.requestId, job.path);
+    } else {
+        _phase = StreamPhase::DeleteRun;
+        logf(2, "start delete id=%lu path=%s", (unsigned long)job.requestId, job.path);
+    }
+}
+
+bool StorageJobQueue::tickList() {
+    if (!_storage || !_storage->isReady()) {
+        finishList(false);
+        return false;
+    }
+
+    if (_phase == StreamPhase::ListStart) {
+        JobResult res{};
+        res.type = JobType::ListDir;
+        res.phase = StreamPhase::ListStart;
+        res.requestId = _active.requestId;
+        res.ok = true;
+        strncpy(res.folder, _active.path, sizeof(res.folder) - 1);
+        pushResult(res);
+        _phase = StreamPhase::ListEntry;
+        return true;
+    }
+
+    if (_phase == StreamPhase::ListEntry) {
+        StorageManager::DirEntry ent{};
+        const int rc = _storage->listNextFile(_active.path, _listCursor, ent, &_listTotal);
+
+        if (rc == -2) {
+            _phase = StreamPhase::Paused;
+            logf(2, "list paused id=%lu (azan)", (unsigned long)_active.requestId);
+            return true;
+        }
+        if (rc < 0) {
+            finishList(false);
+            return false;
+        }
+        if (rc == 0) {
+            finishList(true);
+            return false;
+        }
+
+        JobResult res{};
+        res.type = JobType::ListDir;
+        res.phase = StreamPhase::ListEntry;
+        res.requestId = _active.requestId;
+        res.ok = true;
+        strncpy(res.folder, _active.path, sizeof(res.folder) - 1);
+        strncpy(res.entry.name, ent.name, sizeof(res.entry.name) - 1);
+        res.entry.size = ent.size;
+        pushResult(res);
+
+        if (_batchCount < 16) {
+            _batch[_batchCount++] = res.entry;
+        }
+        return true;
+    }
+
+    if (_phase == StreamPhase::Paused) {
+        if (AzanSafeMode::allowStorageJobs()) {
+            _phase = StreamPhase::ListEntry;
+            return true;
+        }
+        return true;
+    }
+
+    return false;
+}
+
+void StorageJobQueue::finishList(bool ok) {
+    JobResult res{};
+    res.type = JobType::ListDir;
+    res.phase = StreamPhase::ListEnd;
+    res.requestId = _active.requestId;
+    res.ok = ok;
+    strncpy(res.folder, _active.path, sizeof(res.folder) - 1);
+    res.fileCount = _batchCount;
+    res.listTotal = (uint8_t)(_listTotal > 255 ? 255 : _listTotal);
+    res.listPage = _active.page;
+    for (uint8_t i = 0; i < _batchCount; i++) {
+        res.files[i] = _batch[i];
+    }
+    pushResult(res);
+
+    logf(2, "list done id=%lu ok=%d files=%u total=%d",
+         (unsigned long)_active.requestId, ok ? 1 : 0, (unsigned)_batchCount, _listTotal);
+
+    _phase = StreamPhase::Idle;
+    _batchCount = 0;
+}
+
+bool StorageJobQueue::tickDelete() {
+    if (!_storage || !_active.path[0]) {
+        JobResult res{};
+        res.type = JobType::DeleteFile;
+        res.requestId = _active.requestId;
+        res.ok = false;
+        strncpy(res.message, _active.path, sizeof(res.message) - 1);
+        pushResult(res);
+        _phase = StreamPhase::Idle;
+        return false;
+    }
+
+    if (_storage->isPlaybackLocked()) {
+        _phase = StreamPhase::Paused;
+        return true;
+    }
+
+    if (_phase == StreamPhase::Paused) {
+        if (!_storage->isPlaybackLocked()) {
+            _phase = StreamPhase::DeleteRun;
+        }
+        return _phase == StreamPhase::Paused;
+    }
+
+    const bool ok = _storage->removeFile(_active.path);
+    JobResult res{};
+    res.type = JobType::DeleteFile;
+    res.requestId = _active.requestId;
+    res.ok = ok;
+    strncpy(res.message, _active.path, sizeof(res.message) - 1);
+    pushResult(res);
+
+    logf(2, "delete done id=%lu ok=%d", (unsigned long)_active.requestId, ok ? 1 : 0);
+    _phase = StreamPhase::Idle;
+    return false;
+}
+
+bool StorageJobQueue::tick() {
+    if (_phase == StreamPhase::Idle) {
+        Job job{};
+        if (_jobQ && xQueueReceive(_jobQ, &job, 0) == pdTRUE) {
+            startJob(job);
+        } else {
+            return false;
+        }
+    }
+
+    if (_active.type == JobType::ListDir) {
+        return tickList();
+    }
+    return tickDelete();
+}
+
 void StorageJobQueue::poll() {
     if (!_resultQ || !_emit) return;
 
     JobResult res{};
     while (xQueueReceive(_resultQ, &res, 0) == pdTRUE) {
         UiEventPayload ev{};
+
         if (res.type == JobType::ListDir) {
-            ev.type = UiEvent::FileListReady;
-            ev.result = res.ok ? UiResult::Ok : UiResult::Failed;
-            ev.fileCount = res.fileCount;
-            ev.listPage = res.listPage;
-            ev.listTotal = res.listTotal;
-            ev.listRequestId = res.requestId;
-            strncpy(ev.listFolder, res.folder, sizeof(ev.listFolder) - 1);
-            for (uint8_t i = 0; i < res.fileCount && i < 16; i++) {
-                ev.files[i] = res.files[i];
+            if (res.phase == StreamPhase::ListStart) {
+                ev.type = UiEvent::FileListStreamStart;
+                ev.listRequestId = res.requestId;
+                strncpy(ev.listFolder, res.folder, sizeof(ev.listFolder) - 1);
+            } else if (res.phase == StreamPhase::ListEntry) {
+                ev.type = UiEvent::FileListStreamEntry;
+                ev.listRequestId = res.requestId;
+                ev.fileCount = 1;
+                ev.files[0] = res.entry;
+                strncpy(ev.listFolder, res.folder, sizeof(ev.listFolder) - 1);
+            } else if (res.phase == StreamPhase::ListEnd) {
+                UiEventPayload endEv{};
+                endEv.type = UiEvent::FileListStreamEnd;
+                endEv.result = res.ok ? UiResult::Ok : UiResult::Failed;
+                endEv.listRequestId = res.requestId;
+                endEv.listTotal = res.listTotal;
+                strncpy(endEv.listFolder, res.folder, sizeof(endEv.listFolder) - 1);
+                _emit(endEv, _emitUser);
+
+                ev.type = UiEvent::FileListReady;
+                ev.result = res.ok ? UiResult::Ok : UiResult::Failed;
+                ev.listRequestId = res.requestId;
+                ev.fileCount = res.fileCount;
+                ev.listTotal = res.listTotal;
+                ev.listPage = res.listPage;
+                strncpy(ev.listFolder, res.folder, sizeof(ev.listFolder) - 1);
+                for (uint8_t i = 0; i < res.fileCount && i < 16; i++) {
+                    ev.files[i] = res.files[i];
+                }
             }
         } else if (res.type == JobType::DeleteFile) {
             ev.type = UiEvent::FileOpResult;
             ev.result = res.ok ? UiResult::Ok : UiResult::Failed;
             strncpy(ev.message, res.message, sizeof(ev.message) - 1);
         }
-        _emit(ev, _emitUser);
-    }
-}
 
-void StorageJobQueue::workerEntry(void* arg) {
-    static_cast<StorageJobQueue*>(arg)->workerLoop();
-}
-
-bool StorageJobQueue::runListJob(const Job& job, JobResult& out) {
-    out = {};
-    out.type = JobType::ListDir;
-    out.requestId = job.requestId;
-    out.listPage = job.page;
-    strncpy(out.folder, job.path, sizeof(out.folder) - 1);
-
-    if (!_storage || !_storage->isReady()) {
-        return false;
-    }
-    if (_storage->isPlaybackLocked()) {
-        return false;
-    }
-
-    StorageManager::DirEntry entries[16]{};
-    int total = 0;
-    const int skip = (int)job.page * (int)job.pageSize;
-    const int n = _storage->listDirectoryPage(
-        job.path, entries, (int)job.pageSize, skip, &total);
-
-    if (n < 0) {
-        return false;
-    }
-
-    out.fileCount = (uint8_t)n;
-    out.listTotal = (uint8_t)(total > 255 ? 255 : total);
-    for (uint8_t i = 0; i < out.fileCount; i++) {
-        strncpy(out.files[i].name, entries[i].name, sizeof(out.files[i].name) - 1);
-        out.files[i].size = entries[i].size;
-    }
-    return true;
-}
-
-bool StorageJobQueue::runDeleteJob(const Job& job, JobResult& out) {
-    out = {};
-    out.type = JobType::DeleteFile;
-    out.requestId = job.requestId;
-    strncpy(out.message, job.path, sizeof(out.message) - 1);
-
-    if (!_storage || !job.path[0]) {
-        return false;
-    }
-    if (_storage->isPlaybackLocked()) {
-        return false;
-    }
-    return _storage->removeFile(job.path);
-}
-
-void StorageJobQueue::processJob(const Job& job) {
-    const uint32_t t0 = millis();
-    JobResult res{};
-
-    logf(2, "run id=%lu type=%u path=%s",
-         (unsigned long)job.requestId, (unsigned)job.type, job.path);
-
-    if (job.type == JobType::ListDir) {
-        res.ok = runListJob(job, res);
-    } else if (job.type == JobType::DeleteFile) {
-        res.ok = runDeleteJob(job, res);
-    }
-
-    pushResult(res);
-
-    logf(2, "done id=%lu ok=%d ms=%lu files=%u",
-         (unsigned long)job.requestId,
-         res.ok ? 1 : 0,
-         (unsigned long)(millis() - t0),
-         (unsigned)res.fileCount);
-}
-
-void StorageJobQueue::workerLoop() {
-    Job job{};
-    for (;;) {
-        if (xQueueReceive(_jobQ, &job, portMAX_DELAY) != pdTRUE) {
-            continue;
+        if (ev.type != UiEvent::None) {
+            _emit(ev, _emitUser);
         }
-        _busy = true;
-        processJob(job);
-        _busy = false;
     }
 }

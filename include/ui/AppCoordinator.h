@@ -44,14 +44,29 @@ struct AppServices {
 
 class AppCoordinator {
 public:
+    static constexpr uint8_t kMaxDeferredCmds = 16;
+
     bool begin(UiBridge& bridge, const AppServices& svc);
-    void poll();
+
+    /** Drain UiBridge normal queue into internal buffer (SysCoord task only). */
+    void ingestCommands();
+
+    /** Pop one deferred command matching priority band, or false. */
+    bool popDeferredAtPriority(uint8_t priorityBand, UiCommand& out);
+
+    /** P0 fast lane — immediate stop, no audio queue wait. */
+    void executeEmergencyStop(bool* isAudioPlaying);
+
+    void dispatchCommand(const UiCommand& cmd);
+    void pollStorageResults();
+    bool tickStorageWorker();
+
+    static uint8_t commandPriority(UiCmd cmd);
 
     UiBridge& bridge() { return *_bridge; }
 
 private:
     static void storageEmitThunk(const UiEventPayload& ev, void* user);
-    void dispatch(const UiCommand& cmd);
     void emit(const UiEventPayload& ev);
     void handleStopAudio();
     void handleSetVolumePct(uint8_t pct);
@@ -68,10 +83,11 @@ private:
     void handleDeleteFile(const char* path);
     void handleSelectAzanFile(const char* path);
     void handlePlayFile(const char* path);
-    void handleListFiles(bool audioOnly);
     bool storageBlocked() const;
     static const char* prayerName(int idx);
 
     UiBridge* _bridge = nullptr;
     AppServices _svc{};
+    UiCommand _deferred[kMaxDeferredCmds]{};
+    uint8_t _deferredCount = 0;
 };
