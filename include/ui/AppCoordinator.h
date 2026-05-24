@@ -8,16 +8,15 @@
 #include "TimeManager.h"
 #include "AppTypes.h"
 
-class NetworkManager;
+class BluetoothManager;
 
 struct AppServices {
     AudioManager* audio = nullptr;
     StorageManager* storage = nullptr;
     TimeManager* time = nullptr;
     StorageJobQueue* storageJobs = nullptr;
-    NetworkManager* network = nullptr;
+    BluetoothManager* bluetooth = nullptr;
 
-    bool* wifiIsOn = nullptr;
     bool* isAudioPlaying = nullptr;
 
     bool* preFajrEnabled = nullptr;
@@ -40,7 +39,6 @@ struct AppServices {
     void (*savePreFajrToNvs)(bool) = nullptr;
     void (*saveAzanIndexToNvs)(uint8_t) = nullptr;
     void (*saveAzanPathToNvs)(const char* path) = nullptr;
-    void (*saveWifiLastToNvs)(bool on) = nullptr;
     bool (*readDayRecord)(int day, DayRecord& out) = nullptr;
 };
 
@@ -59,8 +57,9 @@ private:
     void handleSetVolumePct(uint8_t pct);
     void handlePreFajr(bool on);
     void handleAzanIndex(uint8_t idx);
-    void handleToggleWifi();
-    void handleRequestWifiStatus();
+    void handleToggleTransferMode();
+    void handleRequestBluetoothStatus();
+    void handleCancelBluetoothTransfer();
     void handleRequestSystemStatus();
     void handleRequestClock();
     void handleRequestPrayer();

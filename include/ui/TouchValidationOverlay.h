@@ -7,7 +7,7 @@
 #include <TFT_eSPI.h>
 #include "ui/Xpt2046Touch.h"
 
-/** LVGL bypass: fixed-calibration touch trail test (audio/RTC/SD/WiFi unchanged). */
+/** LVGL bypass: fixed-calibration touch trail test (audio/RTC/SD unchanged). */
 class TouchValidationOverlay {
 public:
     bool begin();

@@ -10,7 +10,7 @@
                     StorageJobQueue (Core 0)  AudioManager  TimeManager  NVS
 ```
 
-- **No SD / WiFi / audio I/O in LVGL callbacks** — only `postCommand`.
+- **No SD / network / audio I/O in LVGL callbacks** — only `postCommand`.
 - **SD list/delete** runs on `SDJob` (~16 KB stack, core 0) via `StorageJobQueue`.
 - Worker never touches LVGL; results use a **result queue** drained in `AppCoordinator::poll()`.
 - Directory listing uses `listDirectoryPage()` (no `String`/JSON on the worker stack).
@@ -25,7 +25,7 @@
 | Prayer | PrayerTimes | 5 prayer cards, highlight current/next, refresh |
 | Azan | AzanSettings | Pre-Fajr toggle, volume 0–100, default azan list from `/azan` |
 | Files | FileManager | `/azan` / `/quran` tabs, play (tap), delete (long-press + confirm) |
-| System | WiFi/RTC | WiFi toggle, IP, RSSI, SD/RTC/default azan status |
+| BT | Bluetooth | Transfer mode toggle, connection status placeholder, upload progress bar, SD/RTC info |
 
 **Quran Player**: opened from Files → Player; lists `/quran`, tap to play.
 
@@ -38,7 +38,9 @@
 | `ListFolder` | Async list `/azan`, `/quran`, etc. |
 | `SelectAzanFile` | Set default azan + NVS `azan_path` |
 | `SetVolume` | 0–100% → maps to 0–21 I2S scale + NVS |
-| `ToggleWifi` | Non-blocking `toggleWiFi()` + NVS `wifi_last` |
+| `ToggleTransferMode` | Enable/disable Bluetooth transfer mode (placeholder) |
+| `RequestBluetoothStatus` | Push BT connection / progress events |
+| `CancelBluetoothTransfer` | Cancel in-flight transfer (placeholder) |
 | `RequestClock` / `RequestPrayerTimes` / `RequestSystemStatus` | Push UI events |
 
 ## NVS (`SettingsStore` / `azan_system`)
@@ -49,7 +51,8 @@
 | `prefajr` | Pre-Fajr alarm |
 | `azan_idx` | Built-in azan index |
 | `azan_path` | Default SD azan file |
-| `wifi_last` | Last WiFi on/off preference |
+
+(WiFi / `wifi_last` removed — device is offline-first.)
 
 ## Touch calibration
 

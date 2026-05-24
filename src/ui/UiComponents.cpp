@@ -30,7 +30,7 @@ UiStatusBarWidgets UiComponents::createStatusBar(lv_obj_t* parent, lv_coord_t wi
         lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
         return l;
     };
-    sb.wifi = mk(LV_SYMBOL_WIFI);
+    sb.bt = mk(LV_SYMBOL_BLUETOOTH);
     sb.timeSrc = mk("RTC");
     sb.vol = mk(LV_SYMBOL_VOLUME_MAX);
     sb.sd = mk(LV_SYMBOL_SD_CARD);
@@ -40,9 +40,17 @@ UiStatusBarWidgets UiComponents::createStatusBar(lv_obj_t* parent, lv_coord_t wi
 
 void UiComponents::updateStatusBar(UiStatusBarWidgets& sb, const UiEventPayload& ev) {
     if (!sb.root) return;
-    if (sb.wifi) {
-        lv_label_set_text(sb.wifi, ev.wifiOn ? LV_SYMBOL_WIFI : LV_SYMBOL_CLOSE);
-        lv_obj_set_style_text_color(sb.wifi, ev.wifiOn ? UiTheme::kSuccess() : UiTheme::kMuted(), 0);
+    if (sb.bt) {
+        if (ev.btTransferActive) {
+            lv_label_set_text(sb.bt, LV_SYMBOL_DOWNLOAD);
+            lv_obj_set_style_text_color(sb.bt, UiTheme::kAccent(), 0);
+        } else if (ev.btEnabled) {
+            lv_label_set_text(sb.bt, LV_SYMBOL_BLUETOOTH);
+            lv_obj_set_style_text_color(sb.bt, ev.btConnected ? UiTheme::kSuccess() : UiTheme::kMuted(), 0);
+        } else {
+            lv_label_set_text(sb.bt, LV_SYMBOL_CLOSE);
+            lv_obj_set_style_text_color(sb.bt, UiTheme::kMuted(), 0);
+        }
     }
     if (sb.timeSrc) lv_label_set_text(sb.timeSrc, ev.clockSource[0] ? ev.clockSource : ev.timeSource);
     if (sb.vol) {
@@ -69,10 +77,10 @@ UiBottomNavWidgets UiComponents::createBottomNav(lv_obj_t* parent, UiScreenId ac
     lv_obj_set_flex_flow(nav.root, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(nav.root, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    static const char* labels[] = {"Home", "Prayer", "Azan", "Files", "System"};
+    static const char* labels[] = {"Home", "Prayer", "Azan", "Files", "BT"};
     static const UiScreenId ids[] = {
         UiScreenId::Home, UiScreenId::PrayerTimes, UiScreenId::AzanSettings,
-        UiScreenId::FileManager, UiScreenId::System};
+        UiScreenId::FileManager, UiScreenId::Bluetooth};
 
     for (int i = 0; i < 5; i++) {
         lv_obj_t* b = lv_btn_create(nav.root);
@@ -92,7 +100,7 @@ UiBottomNavWidgets UiComponents::createBottomNav(lv_obj_t* parent, UiScreenId ac
 void UiComponents::highlightNav(UiBottomNavWidgets& nav, UiScreenId active) {
     static const UiScreenId ids[] = {
         UiScreenId::Home, UiScreenId::PrayerTimes, UiScreenId::AzanSettings,
-        UiScreenId::FileManager, UiScreenId::System};
+        UiScreenId::FileManager, UiScreenId::Bluetooth};
     for (int i = 0; i < 5; i++) {
         if (!nav.btns[i]) continue;
         bool on = (ids[i] == active);

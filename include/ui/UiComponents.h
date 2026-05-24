@@ -8,7 +8,7 @@
 
 struct UiStatusBarWidgets {
     lv_obj_t* root = nullptr;
-    lv_obj_t* wifi = nullptr;
+    lv_obj_t* bt = nullptr;
     lv_obj_t* timeSrc = nullptr;
     lv_obj_t* vol = nullptr;
     lv_obj_t* sd = nullptr;

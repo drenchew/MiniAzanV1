@@ -30,7 +30,7 @@ bool allowStorageJobs() {
     return !s_active;
 }
 
-bool allowWifiStart() {
+bool allowBluetoothTransfer() {
     return !s_active;
 }
 

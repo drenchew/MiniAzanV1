@@ -4,7 +4,7 @@
 
 /**
  * Exclusive resource mode while azan/I2S decode is active.
- * Blocks non-audio SD jobs, WiFi bring-up, and heavy UI refresh.
+ * Blocks non-audio SD jobs, Bluetooth transfer, and heavy UI refresh.
  */
 namespace AzanSafeMode {
 
@@ -13,7 +13,7 @@ void exit();
 bool isActive();
 
 bool allowStorageJobs();
-bool allowWifiStart();
+bool allowBluetoothTransfer();
 bool allowLvglTickRefresh();
 
 }  // namespace AzanSafeMode

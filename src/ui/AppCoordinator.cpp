@@ -2,8 +2,8 @@
 #include "AppTypes.h"
 #include "AppLog.h"
 #include "system/AzanSafeMode.h"
-#include "system/NetworkManager.h"
-#include <WiFi.h>
+#include "system/BluetoothManager.h"
+#include "system/BluetoothTransferJob.h"
 
 static void sdJobLogAdapter(int level, const char* tag, const char* msg) {
     appLog(level, tag, msg);
@@ -82,12 +82,28 @@ void AppCoordinator::handleAzanIndex(uint8_t idx) {
     emit(ev);
 }
 
-void AppCoordinator::handleToggleWifi() {
-    if (_svc.network) {
-        _svc.network->requestToggle();
+void AppCoordinator::handleToggleTransferMode() {
+    if (!_svc.bluetooth) return;
+    bool next = !_svc.bluetooth->isEnabled();
+    if (next && AzanSafeMode::isActive()) {
+        UiEventPayload ev{};
+        ev.type = UiEvent::CmdResult;
+        ev.result = UiResult::Rejected;
+        strncpy(ev.message, "Azan playing", sizeof(ev.message) - 1);
+        emit(ev);
+        handleRequestBluetoothStatus();
+        return;
     }
-    handleRequestWifiStatus();
+    _svc.bluetooth->requestTransferMode(next);
+    handleRequestBluetoothStatus();
     handleRequestSystemStatus();
+}
+
+void AppCoordinator::handleCancelBluetoothTransfer() {
+    if (_svc.bluetooth) {
+        _svc.bluetooth->requestCancelTransfer();
+    }
+    handleRequestBluetoothStatus();
 }
 
 void AppCoordinator::handleRequestClock() {
@@ -181,8 +197,14 @@ void AppCoordinator::handleRequestSystemStatus() {
     } else if (_svc.azanFiles && _svc.currentAzanIndex && *_svc.currentAzanIndex < _svc.numAzanFiles) {
         strncpy(ev.defaultAzanPath, _svc.azanFiles[*_svc.currentAzanIndex], sizeof(ev.defaultAzanPath) - 1);
     }
+    if (_svc.bluetooth) {
+        ev.btEnabled = _svc.bluetooth->isEnabled();
+        ev.btConnected = _svc.bluetooth->isConnected();
+        ev.btTransferActive = _svc.bluetooth->isTransferActive();
+        ev.btProgressPct = _svc.bluetooth->activeJob().progressPct;
+    }
     emit(ev);
-    handleRequestWifiStatus();
+    handleRequestBluetoothStatus();
 }
 
 void AppCoordinator::handleSelectAzanFile(const char* path) {
@@ -330,8 +352,9 @@ void AppCoordinator::dispatch(const UiCommand& cmd) {
         case UiCmd::SetVolume: handleSetVolumePct(cmd.vol.volumePct); break;
         case UiCmd::SetPreFajr: handlePreFajr(cmd.pf.enabled); break;
         case UiCmd::SetAzanIndex: handleAzanIndex(cmd.az.index); break;
-        case UiCmd::ToggleWifi: handleToggleWifi(); break;
-        case UiCmd::RequestWifiStatus: handleRequestWifiStatus(); break;
+        case UiCmd::ToggleTransferMode: handleToggleTransferMode(); break;
+        case UiCmd::RequestBluetoothStatus: handleRequestBluetoothStatus(); break;
+        case UiCmd::CancelBluetoothTransfer: handleCancelBluetoothTransfer(); break;
         case UiCmd::RequestSystemStatus: handleRequestSystemStatus(); break;
         case UiCmd::RequestClock: handleRequestClock(); break;
         case UiCmd::RequestPrayerTimes: handleRequestPrayer(); break;
@@ -348,13 +371,44 @@ void AppCoordinator::dispatch(const UiCommand& cmd) {
     }
 }
 
-void AppCoordinator::handleRequestWifiStatus() {
+void AppCoordinator::handleRequestBluetoothStatus() {
     UiEventPayload ev{};
-    ev.type = UiEvent::WifiStatus;
-    if (_svc.wifiIsOn) ev.wifiOn = *_svc.wifiIsOn;
-    if (ev.wifiOn && WiFi.status() == WL_CONNECTED) {
-        ev.wifiRssi = WiFi.RSSI();
-        strncpy(ev.ip, WiFi.localIP().toString().c_str(), sizeof(ev.ip) - 1);
+    ev.type = UiEvent::BluetoothStatus;
+    if (_svc.bluetooth) {
+        ev.btEnabled = _svc.bluetooth->isEnabled();
+        ev.btConnected = _svc.bluetooth->isConnected();
+        ev.btTransferActive = _svc.bluetooth->isTransferActive();
+        const BluetoothTransferJob& job = _svc.bluetooth->activeJob();
+        ev.btProgressPct = job.progressPct;
+        switch (job.phase) {
+            case BtTransferPhase::Idle:
+                strncpy(ev.btStatusMsg, "Offline", sizeof(ev.btStatusMsg) - 1);
+                break;
+            case BtTransferPhase::AwaitingConnection:
+                strncpy(ev.btStatusMsg, "Awaiting connection", sizeof(ev.btStatusMsg) - 1);
+                break;
+            case BtTransferPhase::Receiving:
+                strncpy(ev.btStatusMsg, "Receiving file", sizeof(ev.btStatusMsg) - 1);
+                break;
+            case BtTransferPhase::QueuedForSd:
+                strncpy(ev.btStatusMsg, "Queued for SD", sizeof(ev.btStatusMsg) - 1);
+                break;
+            case BtTransferPhase::Writing:
+                strncpy(ev.btStatusMsg, "Writing to SD", sizeof(ev.btStatusMsg) - 1);
+                break;
+            case BtTransferPhase::Complete:
+                strncpy(ev.btStatusMsg, "Transfer complete", sizeof(ev.btStatusMsg) - 1);
+                break;
+            case BtTransferPhase::PausedForAzan:
+                strncpy(ev.btStatusMsg, "Paused (azan)", sizeof(ev.btStatusMsg) - 1);
+                break;
+            case BtTransferPhase::Error:
+                strncpy(ev.btStatusMsg, job.errorMsg[0] ? job.errorMsg : "Error",
+                        sizeof(ev.btStatusMsg) - 1);
+                break;
+            default:
+                break;
+        }
     }
     emit(ev);
 }

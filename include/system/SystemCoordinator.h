@@ -4,12 +4,9 @@
 #include "ui/UiBridge.h"
 #include "TimeManager.h"
 #include "PrayerScheduler.h"
-#include "system/NetworkManager.h"
+#include "system/BluetoothManager.h"
 
-/**
- * Core-1 application task: routes UI commands, prayer scheduler, network poll.
- * Never calls LVGL — UI task owns display/touch.
- */
+/** Core-1 application task: coordinator, time, prayer, BT poll. Never touches LVGL. */
 class SystemCoordinator {
 public:
     struct Config {
@@ -20,8 +17,7 @@ public:
     };
 
     bool begin(UiBridge& bridge, AppCoordinator& coord, TimeManager& time,
-               PrayerScheduler& prayer, NetworkManager& net, const Config& cfg);
-
+               PrayerScheduler& prayer, BluetoothManager& bt, const Config& cfg);
     void poll();
 
 private:
@@ -32,7 +28,7 @@ private:
     AppCoordinator* _coord = nullptr;
     TimeManager* _time = nullptr;
     PrayerScheduler* _prayer = nullptr;
-    NetworkManager* _net = nullptr;
+    BluetoothManager* _bt = nullptr;
     Config _cfg{};
     TaskHandle_t _task = nullptr;
 };

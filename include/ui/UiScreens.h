@@ -46,7 +46,8 @@ private:
     lv_obj_t* _sliderVol = nullptr;
     lv_obj_t* _swPreFajr = nullptr;
     lv_obj_t* _listFiles = nullptr;
-    lv_obj_t* _swWifi = nullptr;
+    lv_obj_t* _swTransfer = nullptr;
+    lv_obj_t* _barBtProgress = nullptr;
     lv_obj_t* _lblSystem = nullptr;
     lv_obj_t* _scroll = nullptr;
 

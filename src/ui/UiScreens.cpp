@@ -35,9 +35,7 @@ void UiScreens::lvCbBtn(lv_event_t* e) {
         return;
     }
     if (op == 3) {
-        UiCommand c{};
-        c.cmd = UiCmd::ToggleWifi;
-        bridgePost(b, c);
+        g_active->show(UiScreenId::Bluetooth);
         return;
     }
     if (op == 10) {
@@ -109,7 +107,7 @@ void UiScreens::show(UiScreenId id) {
 void UiScreens::rebuildShell(UiScreenId id) {
     lv_obj_clean(_contentArea);
     _lblClock = _lblDate = _lblPrayerNow = _lblNextPrayer = nullptr;
-    _barProgress = _sliderVol = _swPreFajr = _listFiles = _swWifi = _lblSystem = _scroll = nullptr;
+    _barProgress = _sliderVol = _swPreFajr = _listFiles = _swTransfer = _lblSystem = _barBtProgress = _scroll = nullptr;
     _filePathCount = 0;
     for (int i = 0; i < 5; i++) {
         _prayerCards[i] = nullptr;
@@ -122,7 +120,7 @@ void UiScreens::rebuildShell(UiScreenId id) {
         case UiScreenId::AzanSettings: buildAzanSettings(_contentArea); break;
         case UiScreenId::FileManager: buildFileManager(_contentArea); break;
         case UiScreenId::QuranPlayer: buildQuranPlayer(_contentArea); break;
-        case UiScreenId::System: buildSystem(_contentArea); break;
+        case UiScreenId::Bluetooth: buildSystem(_contentArea); break;
         default: buildHome(_contentArea); break;
     }
 }
@@ -156,8 +154,8 @@ void UiScreens::requestDataForScreen(UiScreenId id) {
             strncpy(c.list.path, "/quran", sizeof(c.list.path) - 1);
             sendCmd(c);
             break;
-        case UiScreenId::System:
-            c.cmd = UiCmd::RequestWifiStatus;
+        case UiScreenId::Bluetooth:
+            c.cmd = UiCmd::RequestBluetoothStatus;
             sendCmd(c);
             c.cmd = UiCmd::RequestSystemStatus;
             sendCmd(c);
@@ -351,20 +349,39 @@ void UiScreens::buildQuranPlayer(lv_obj_t* area) {
 void UiScreens::buildSystem(lv_obj_t* area) {
     _scroll = UiComponents::createScrollContent(area, 0, lv_obj_get_height(area));
 
-    lv_obj_t* card = UiComponents::createCard(_scroll, 216, 140);
+    lv_obj_t* title = lv_label_create(_scroll);
+    lv_label_set_text(title, "Bluetooth Transfer");
+    lv_obj_set_style_text_color(title, UiTheme::kText(), 0);
+
+    lv_obj_t* card = UiComponents::createCard(_scroll, 216, 160);
     _lblSystem = lv_label_create(card);
-    lv_label_set_text(_lblSystem, "Loading...");
+    lv_label_set_text(_lblSystem, "Transfer mode: OFF\nStatus: Offline\n(SPP not implemented)");
     lv_label_set_long_mode(_lblSystem, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(_lblSystem, 200);
+    lv_obj_align(_lblSystem, LV_ALIGN_TOP_LEFT, 0, 0);
 
-    _swWifi = lv_switch_create(card);
-    lv_obj_align(_swWifi, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
-    lv_obj_add_event_cb(_swWifi, [](lv_event_t* e) {
+    lv_obj_t* lblSw = lv_label_create(card);
+    lv_label_set_text(lblSw, "Transfer Mode");
+    lv_obj_align(lblSw, LV_ALIGN_BOTTOM_LEFT, 0, -8);
+
+    _swTransfer = lv_switch_create(card);
+    lv_obj_align(_swTransfer, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_add_event_cb(_swTransfer, [](lv_event_t* e) {
         if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
         UiCommand c{};
-        c.cmd = UiCmd::ToggleWifi;
+        c.cmd = UiCmd::ToggleTransferMode;
         if (g_active) g_active->sendCmd(c);
     }, LV_EVENT_VALUE_CHANGED, nullptr);
+
+    lv_obj_t* progCard = UiComponents::createCard(_scroll, 216, 56);
+    lv_obj_t* progLbl = lv_label_create(progCard);
+    lv_label_set_text(progLbl, "Upload progress");
+    lv_obj_align(progLbl, LV_ALIGN_TOP_LEFT, 0, 0);
+    _barBtProgress = lv_bar_create(progCard);
+    lv_obj_set_size(_barBtProgress, 200, 12);
+    lv_obj_align(_barBtProgress, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_bar_set_range(_barBtProgress, 0, 100);
+    lv_bar_set_value(_barBtProgress, 0, LV_ANIM_OFF);
 }
 
 void UiScreens::populateFileList(const UiEventPayload& ev) {
@@ -480,14 +497,20 @@ void UiScreens::onEvent(const UiEventPayload& ev) {
             }
             break;
 
-        case UiEvent::WifiStatus:
-            if (_swWifi) {
-                if (ev.wifiOn) lv_obj_add_state(_swWifi, LV_STATE_CHECKED);
-                else lv_obj_clear_state(_swWifi, LV_STATE_CHECKED);
+        case UiEvent::BluetoothStatus:
+            if (_swTransfer) {
+                if (ev.btEnabled) lv_obj_add_state(_swTransfer, LV_STATE_CHECKED);
+                else lv_obj_clear_state(_swTransfer, LV_STATE_CHECKED);
             }
-            if (_lblSystem && _screen == UiScreenId::System) {
-                snprintf(buf, sizeof(buf), "WiFi: %s\nIP: %s\nRSSI: %d dBm",
-                         ev.wifiOn ? "ON" : "OFF", ev.ip[0] ? ev.ip : "-", ev.wifiRssi);
+            if (_barBtProgress) {
+                lv_bar_set_value(_barBtProgress, ev.btProgressPct, LV_ANIM_OFF);
+            }
+            if (_lblSystem && _screen == UiScreenId::Bluetooth) {
+                snprintf(buf, sizeof(buf),
+                         "Transfer: %s\nConnected: %s\n%s",
+                         ev.btEnabled ? "ON" : "OFF",
+                         ev.btConnected ? "yes" : "no",
+                         ev.btStatusMsg[0] ? ev.btStatusMsg : "Ready");
                 lv_label_set_text(_lblSystem, buf);
             }
             break;
@@ -500,7 +523,7 @@ void UiScreens::onEvent(const UiEventPayload& ev) {
                 if (ev.preFajr) lv_obj_add_state(_swPreFajr, LV_STATE_CHECKED);
                 else lv_obj_clear_state(_swPreFajr, LV_STATE_CHECKED);
             }
-            if (_lblSystem && _screen == UiScreenId::System) {
+            if (_lblSystem && _screen == UiScreenId::Bluetooth) {
                 snprintf(buf, sizeof(buf), "SD: %s\nRTC: %s\nDefault: %s",
                          ev.sdReady ? "OK" : "FAIL", ev.timeSource,
                          ev.defaultAzanPath[0] ? ev.defaultAzanPath : "(built-in)");

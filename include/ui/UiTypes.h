@@ -10,8 +10,9 @@ enum class UiCmd : uint8_t {
     SetVolume,
     SetPreFajr,
     SetAzanIndex,
-    ToggleWifi,
-    RequestWifiStatus,
+    ToggleTransferMode,
+    RequestBluetoothStatus,
+    CancelBluetoothTransfer,
     RequestClock,
     RequestPrayerTimes,
     RequestSystemStatus,
@@ -32,7 +33,7 @@ enum class UiEvent : uint8_t {
     AudioState,
     ClockUpdate,
     PrayerTimesUpdate,
-    WifiStatus,
+    BluetoothStatus,
     SystemStatus,
     VolumeState,
     PreFajrState,
@@ -48,9 +49,10 @@ enum class UiScreenId : uint8_t {
     AzanSettings,
     FileManager,
     QuranPlayer,
-    System,
+    Bluetooth,
     /** @deprecated aliases for migration */
-    Wifi = System,
+    System = Bluetooth,
+    Wifi = Bluetooth,
     Volume = AzanSettings,
     AzanSelect = AzanSettings,
     PreFajr = AzanSettings,
@@ -114,9 +116,12 @@ struct UiEventPayload {
     bool preFajr = false;
     uint8_t azanIndex = 0;
     bool audioPlaying = false;
-    bool wifiOn = false;
-    int wifiRssi = -120;
-    char ip[16]{};
+
+    bool btEnabled = false;
+    bool btConnected = false;
+    bool btTransferActive = false;
+    uint8_t btProgressPct = 0;
+    char btStatusMsg[48]{};
 
     bool sdReady = false;
     bool rtcOk = false;
