@@ -5,22 +5,23 @@
  * DESIGN GOAL
  * ───────────
  * Eliminate ALL runtime heap fragmentation by pre-allocating every
- * performance-critical buffer in BSS at link time.  After
- * MemoryManager::begin() completes, no malloc / new / heap_caps_malloc
+ * performance-critical buffer at boot time (heap_caps_malloc, not BSS).
+ * Allocations happen in size-descending order to prevent fragmentation.
+ * After MemoryManager::begin() completes, no malloc / new / heap_caps_malloc
  * may be called on any runtime path.
  *
- * POOL LAYOUT (BSS, preallocated at link time)
- * ─────────────────────────────────────────────
+ * POOL LAYOUT (Heap, allocated at boot in size-descending order)
+ * ─────────────────────────────────────────────────────────────────
  *  Pool              │ Block  │ Count │  Total  │ Owner task/module
  * ───────────────────┼────────┼───────┼─────────┼──────────────────────────
- *  AudioDecodePool   │  512 B │   8   │  4 096 B│ AudioTask  (P0 / P1)
- *  SdStreamPool      │ 1024 B │   8   │  8 192 B│ AudioTask during play,
- *                    │        │       │         │ StorageJobQueue otherwise
- *  BtTxPool          │  512 B │   4   │  2 048 B│ BluetoothManager TX
- *  BtRxPool          │  512 B │   4   │  2 048 B│ BluetoothManager RX
+ *  SdStreamPool      │ 1024 B │   8   │  8 192 B│ Allocated FIRST (largest)
  *  LvglDrawBufA/B    │ 9 600 B│   2   │ 19 200 B│ UIManager (LVGL DMA)
+ *  AudioDecodePool   │  512 B │   8   │  4 096 B│ AudioTask  (P0 / P1)
+ *  BtRxPool          │  512 B │   4   │  2 048 B│ BluetoothManager RX
+ *  BtTxPool          │  512 B │   4   │  2 048 B│ BluetoothManager TX
  * ───────────────────┼────────┼───────┼─────────┼──────────────────────────
- *  TOTAL BSS                           ~35.5 KB
+ *  TOTAL HEAP                           ~35.5 KB
+ *  (Allocated at boot in MemoryManager::begin() — zero runtime fragmentation)
  *
  * PRIORITY RULES DURING AZAN PLAYBACK  (AzanSafeMode::isActive() == true)
  * ─────────────────────────────────────────────────────────────────────────
@@ -30,7 +31,7 @@
  *
  * LOCKING STRATEGY
  * ─────────────────
- *  StaticBlockPool uses portENTER_CRITICAL / portEXIT_CRITICAL
+ *  HeapBlockPool uses portENTER_CRITICAL / portEXIT_CRITICAL
  *  (ESP32 dual-core spinlock, portMUX_TYPE).  The critical section
  *  is 3–5 instructions — safe for P0 callers and ISR contexts.
  *  AudioDecodePool is single-owner (AudioTask) so its lock is
@@ -41,6 +42,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <cstdlib>
 #include <freertos/FreeRTOS.h>
 #include <freertos/portmacro.h>
 
@@ -75,7 +77,7 @@ constexpr size_t BT_RX_BLOCK_COUNT = 4;       // 2 048 B total
 /// Display width in pixels (ILI9341 portrait)
 constexpr size_t LVGL_DRAW_WIDTH  = 240;
 /// Lines per flush — must match UiPanel::kBufLines (currently 20)
-constexpr size_t LVGL_DRAW_LINES  = 20;
+constexpr size_t LVGL_DRAW_LINES  = 10;
 /// Total pixels per draw buffer
 constexpr size_t LVGL_DRAW_PIXELS = LVGL_DRAW_WIDTH * LVGL_DRAW_LINES; // 4 800
 /// Bytes per draw buffer (16 bpp = 2 bytes/pixel)
@@ -87,7 +89,7 @@ constexpr size_t TOTAL_POOL_BYTES =
     (SD_BLOCK_SIZE     * SD_BLOCK_COUNT)    +   //  8 192 B
     (BT_TX_BLOCK_SIZE  * BT_TX_BLOCK_COUNT) +   //  2 048 B
     (BT_RX_BLOCK_SIZE  * BT_RX_BLOCK_COUNT) +   //  2 048 B
-    (LVGL_DRAW_BYTES   * 2);                    // 19 200 B (double buffer)
+    (LVGL_DRAW_BYTES   * 1);                    // 19 200 B (double buffer)
     // ─────────────────────────────────────────────────────
     //  TOTAL: 35 584 B  ≈  34.75 KB  (static BSS — no heap)
 
@@ -95,56 +97,95 @@ constexpr size_t TOTAL_POOL_BYTES =
 
 
 // ═════════════════════════════════════════════════════════════════════════════
-//  StaticBlockPool<BlockSize, BlockCount>
+//  HeapBlockPool<BlockSize, BlockCount>
 //
-//  Fixed-capacity pool allocator whose entire storage resides in BSS.
-//  No heap involvement at any point in its lifetime.
+//  Fixed-capacity pool allocator whose storage is heap-allocated at boot.
+//  Allocations happen via heap_caps_malloc(MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL)
+//  in MemoryManager::begin(), in size-descending order to prevent fragmentation.
+//  After begin() returns, no further malloc calls occur.
 //
 //  Acquire/release are O(1) and spinlock-protected (portMUX_TYPE).
 //  The critical section spans 3 instructions — negligible overhead even
 //  in the P0 audio path.
 //
-//  Memory layout inside the struct (all in BSS):
-//    [_storage  BlockCount × BlockSize bytes]  ← aligned(4), DMA-safe
+//  Memory layout:
+//    [_storage  BlockCount × BlockSize bytes]  ← 4-byte aligned, DMA-safe
 //    [_freeList BlockCount bytes]
 //    [_freeTop  1 byte]
 //    [_mux      8 bytes  (portMUX_TYPE on ESP32 dual-core)]
 //    [counters  12 bytes  (3 × uint32_t)]
 // ═════════════════════════════════════════════════════════════════════════════
 template<size_t BlockSize, size_t BlockCount>
-class StaticBlockPool {
+class HeapBlockPool {
 
     static_assert(BlockCount >= 1 && BlockCount <= 32,
-                  "StaticBlockPool: BlockCount must be 1..32");
+                  "HeapBlockPool: BlockCount must be 1..32");
     static_assert(BlockSize >= 1,
-                  "StaticBlockPool: BlockSize must be >= 1");
+                  "HeapBlockPool: BlockSize must be >= 1");
 
 public:
-    // ── Raw storage — 4-byte aligned so every block is DMA-capable ───────────
-    alignas(4) uint8_t _storage[BlockCount][BlockSize];
+    // ── Heap-allocated raw storage (pointer to array of blocks) ──────────────
+    uint8_t**    _blocks;            ///< _blocks[idx] → BlockSize bytes
+    size_t       _allocatedBlocks;   ///< number of blocks successfully allocated
 
     // ── Free-list implemented as an index stack ───────────────────────────────
-    // _freeList[0.._freeTop-1] holds indices of available blocks.
     uint8_t      _freeList[BlockCount];
     uint8_t      _freeTop;           ///< stack depth; == BlockCount when full
 
     // ── ESP32 dual-core spinlock (portMUX_TYPE) ───────────────────────────────
-    portMUX_TYPE _mux;               ///< MUST be initialised via init()
+    portMUX_TYPE _mux;
 
     // ── Diagnostic counters ───────────────────────────────────────────────────
-    uint32_t     _acquireOk;         ///< successful acquire() calls
-    uint32_t     _acquireFail;       ///< acquire() calls that returned nullptr
-    uint32_t     _releaseCount;      ///< release() calls
+    uint32_t     _acquireOk;
+    uint32_t     _acquireFail;
+    uint32_t     _releaseCount;
 
 
-    // ── Initialisation ────────────────────────────────────────────────────────
+    // ── Constructor / Destructor ──────────────────────────────────────────────
+
+    HeapBlockPool() : _blocks(nullptr), _allocatedBlocks(0), _freeTop(0) {}
+    ~HeapBlockPool() { cleanup(); }
+
+
+    // ── Heap allocation (called from MemoryManager::begin) ────────────────────
 
     /**
-     * Initialise pool state and spinlock.
-     * Called exactly once by MemoryManager::begin() before any subsystem
-     * starts.  Not thread-safe — call only from setup() context.
+     * Allocate BlockCount blocks from heap (preferring PSRAM, falling back to internal SRAM).
+     * Called exactly once by MemoryManager::begin() in size-descending order.
+     *
+     * @return true if all allocations succeeded, false if any failed.
+     *         On failure, partial allocations are cleaned up.
      */
-    void init() {
+    bool allocateHeap() {
+        // Allocate array of block pointers
+        _blocks = static_cast<uint8_t**>(malloc(BlockCount * sizeof(uint8_t*)));
+        if (!_blocks) {
+            return false;
+        }
+
+        size_t allocated = 0;
+        for (size_t i = 0; i < BlockCount; ++i) {
+            // Allocate each block from heap with default caps (PSRAM preferred, internal fallback)
+            // These pools don't require DMA, so they can use PSRAM if available
+            _blocks[i] = static_cast<uint8_t*>(
+                heap_caps_malloc(BlockSize, MALLOC_CAP_DEFAULT)
+            );
+            if (!_blocks[i]) {
+                // Allocation failed — clean up what we allocated so far
+                cleanup();
+                return false;
+            }
+            allocated++;
+        }
+        _allocatedBlocks = allocated;
+        return true;
+    }
+
+    /**
+     * Initialise pool state and spinlock after heap allocation succeeds.
+     * Called by MemoryManager::begin() after allocateHeap() returns true.
+     */
+    void initFreeList() {
         _mux = portMUX_INITIALIZER_UNLOCKED;
         for (uint8_t i = 0; i < static_cast<uint8_t>(BlockCount); ++i) {
             _freeList[i] = i;
@@ -153,6 +194,24 @@ public:
         _acquireOk    = 0;
         _acquireFail  = 0;
         _releaseCount = 0;
+    }
+
+    /**
+     * Free all heap-allocated blocks.
+     * Called on error path or destructor.
+     */
+    void cleanup() {
+        if (_blocks) {
+            for (size_t i = 0; i < _allocatedBlocks; ++i) {
+                if (_blocks[i]) {
+                    heap_caps_free(_blocks[i]);
+                    _blocks[i] = nullptr;
+                }
+            }
+            free(_blocks);
+            _blocks = nullptr;
+            _allocatedBlocks = 0;
+        }
     }
 
 
@@ -175,7 +234,7 @@ public:
         portENTER_CRITICAL(&_mux);
         if (_freeTop > 0) {
             --_freeTop;
-            ptr = static_cast<void*>(_storage[_freeList[_freeTop]]);
+            ptr = static_cast<void*>(_blocks[_freeList[_freeTop]]);
             ++_acquireOk;
         } else {
             ++_acquireFail;
@@ -188,8 +247,7 @@ public:
      * Release a block back to the pool.
      *
      * @param ptr  Pointer previously returned by acquire() on *this* pool.
-     *             Nullptr is silently ignored.  Stray pointers (not belonging
-     *             to this pool) are detected by range-check and ignored.
+     *             Nullptr is silently ignored.  Stray pointers are checked.
      *
      * Contract:
      *  • Non-blocking, O(1).
@@ -197,28 +255,27 @@ public:
      *  • Do NOT release the same block twice — free-list corruption.
      */
     void release(void* ptr) {
-        if (!ptr) return;
+        if (!ptr || !_blocks) return;
 
-        // Stray-pointer guard: 2 comparisons, no extra memory.
-        const uintptr_t base = reinterpret_cast<uintptr_t>(_storage);
-        const uintptr_t p    = reinterpret_cast<uintptr_t>(ptr);
-        if (p < base || p >= base + sizeof(_storage)) return;
-
-        const uint8_t idx = static_cast<uint8_t>((p - base) / BlockSize);
-
-        portENTER_CRITICAL(&_mux);
-        _freeList[_freeTop] = idx;
-        ++_freeTop;
-        ++_releaseCount;
-        portEXIT_CRITICAL(&_mux);
+        // Find which block this pointer belongs to
+        for (uint8_t i = 0; i < static_cast<uint8_t>(BlockCount); ++i) {
+            if (_blocks[i] == ptr) {
+                portENTER_CRITICAL(&_mux);
+                if (_freeTop < static_cast<uint8_t>(BlockCount)) {
+                    _freeList[_freeTop] = i;
+                    ++_freeTop;
+                    ++_releaseCount;
+                }
+                portEXIT_CRITICAL(&_mux);
+                return;
+            }
+        }
     }
 
 
     // ── Status accessors (read-only, lock-free) ───────────────────────────────
 
-    /** Blocks currently available for acquire. */
     uint8_t  freeCount()     const { return _freeTop; }
-    /** Total blocks in pool (compile-time constant). */
     uint8_t  totalCount()    const { return static_cast<uint8_t>(BlockCount); }
     bool     empty()         const { return _freeTop == 0; }
     bool     full()          const { return _freeTop == static_cast<uint8_t>(BlockCount); }
@@ -239,25 +296,25 @@ public:
 /** @defgroup AudioPools  P0/P1 — Audio real-time path */
 ///@{
 /// MP3 frame staging — exclusive to AudioTask during playback (no contention).
-extern StaticBlockPool<MemCfg::AUDIO_BLOCK_SIZE,  MemCfg::AUDIO_BLOCK_COUNT>  gAudioPool;
+extern HeapBlockPool<MemCfg::AUDIO_BLOCK_SIZE,  MemCfg::AUDIO_BLOCK_COUNT>  gAudioPool;
 /// SD read chunks — AudioTask during play; StorageJobQueue between prayers.
-extern StaticBlockPool<MemCfg::SD_BLOCK_SIZE,     MemCfg::SD_BLOCK_COUNT>     gSdStreamPool;
+extern HeapBlockPool<MemCfg::SD_BLOCK_SIZE,     MemCfg::SD_BLOCK_COUNT>     gSdStreamPool;
 ///@}
 
 /** @defgroup BtPools  P3 — Bluetooth transfer path */
 ///@{
 /// BT SPP outbound staging — BluetoothManager only.
-extern StaticBlockPool<MemCfg::BT_TX_BLOCK_SIZE,  MemCfg::BT_TX_BLOCK_COUNT>  gBtTxPool;
+extern HeapBlockPool<MemCfg::BT_TX_BLOCK_SIZE,  MemCfg::BT_TX_BLOCK_COUNT>  gBtTxPool;
 /// BT SPP inbound staging — BluetoothManager only.
-extern StaticBlockPool<MemCfg::BT_RX_BLOCK_SIZE,  MemCfg::BT_RX_BLOCK_COUNT>  gBtRxPool;
+extern HeapBlockPool<MemCfg::BT_RX_BLOCK_SIZE,  MemCfg::BT_RX_BLOCK_COUNT>  gBtRxPool;
 ///@}
 
 /**
  * @defgroup LvglBuffers  LVGL DMA draw buffers
  *
- * Declared as uint16_t — equivalent to lv_color_t at LV_COLOR_DEPTH=16.
- * DRAM_ATTR + alignas(4) satisfies MALLOC_CAP_DMA requirements without
- * calling heap_caps_malloc at runtime.
+ * Allocated directly on the heap at boot with DMA capabilities.
+ * Each buffer is individually malloc'd with MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL
+ * to ensure internal SRAM (not PSRAM) and alignment for DMA.
  *
  * UIManager registers them at boot:
  * @code
@@ -270,8 +327,8 @@ extern StaticBlockPool<MemCfg::BT_RX_BLOCK_SIZE,  MemCfg::BT_RX_BLOCK_COUNT>  gB
  * never acquired or released through the pool API.
  */
 ///@{
-extern uint16_t gLvglDrawBufA[MemCfg::LVGL_DRAW_PIXELS];
-extern uint16_t gLvglDrawBufB[MemCfg::LVGL_DRAW_PIXELS];
+extern uint16_t* gLvglDrawBufA;
+//extern uint16_t* gLvglDrawBufB;
 ///@}
 
 

@@ -15,6 +15,7 @@
 #include "SettingsStore.h"
 #include "StorageJobQueue.h"
 #include "system/BluetoothManager.h"
+#include "system/BluetoothAudioMode.h"
 #include "system/SystemCoordinator.h"
 #include "system/AzanSafeMode.h"
 #include "system/MemoryGuard.h"
@@ -53,6 +54,7 @@ PrayerScheduler prayerSched;
 SettingsStore settingsStore;
 StorageJobQueue storageJobs;
 BluetoothManager bluetoothMgr;
+BluetoothAudioMode btAudioMode;  // A2DP streaming to speaker
 SystemCoordinator sysCoord;
 
 #if !defined(MINI_AZAN_TOUCH_VALIDATION_MODE) || !MINI_AZAN_TOUCH_VALIDATION_MODE
@@ -225,114 +227,121 @@ String minutesToTime(int totalMinutes);
 static bool readDayRecordBridge(int day, DayRecord& out);
 static void debugSdLogLine(const char* line);
 
+// ─── Prayer scheduler hook functions ─────────────────────────────
+static void prayerPlayAzan() {
+    audioMgr.requestPlay(activeAzanPath());
+}
+
+static bool prayerIsAudioPlaying() {
+    return audioMgr.isRunning();
+}
+
+static void prayerSetAudioPlaying(bool playing) {
+    isAudioPlaying = playing;
+}
+
+static void prayerSetCurrentFile(const char* file) {
+    currentPlayingFile = file;
+}
+
 void setup() {
+    // Initialize serial for logging
     Serial.begin(115200);
-    delay(1000);
-
-    // ── Pool allocator boot — MUST be first; eliminates all runtime heap use ──
+    delay(500);
+    
+    appLogf(APP_LOG_INFO, "BOOT", "=== MiniAzan v1 Starting ===");
+    
+    // CRITICAL: MemoryManager::begin() must be called FIRST, before any other initialization.
+    // It allocates all pools from heap in size-descending order to prevent fragmentation.
+    appLog(APP_LOG_INFO, "BOOT", "Initializing memory pools...");
     MemoryManager::begin();
-
-    WiFi.mode(WIFI_OFF);
-    sysLog(LOG_INFO, "SYSTEM", "=== STARTING AZAN SYSTEM (OFFLINE MODE) ===");
-#if defined(MINI_AZAN_TOUCH_VALIDATION_MODE) && MINI_AZAN_TOUCH_VALIDATION_MODE
-    sysLog(APP_LOG_WARN, "TVAL",
-           "TFT CS=27 DC=25 — verify no pin clash with I2S (main uses 25/26/27)");
-#endif
-
-    if (!storageMgr.begin({}, moduleLog)) {
-        sysLog(LOG_ERROR, "STORAGE", "VSPI SD init failed");
-    }
-
-    Wire.begin();
-
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
-
-    settingsStore.begin();
+    
+    // Initialize core systems
+    appLog(APP_LOG_INFO, "BOOT", "Initializing storage...");
+    storageMgr.begin(appLog);
+    
+    appLog(APP_LOG_INFO, "BOOT", "Initializing time manager...");
+    TimeManager::Config timeCfg{};
+    timeMgr.begin(timeCfg, appLog);
+    
+    appLog(APP_LOG_INFO, "BOOT", "Initializing UI bridge...");
+    uiBridge.begin();
+    
+    appLog(APP_LOG_INFO, "BOOT", "Initializing app coordinator...");
+    AppServices appSvc{};
+    appSvc.audio = &audioMgr;
+    appSvc.storage = &storageMgr;
+    appSvc.time = &timeMgr;
+    appSvc.storageJobs = &storageJobs;
+    appSvc.bluetooth = &bluetoothMgr;
+    appSvc.bluetoothAudio = &btAudioMode;  // A2DP streaming
+    appSvc.isAudioPlaying = &isAudioPlaying;
+    appSvc.preFajrEnabled = &preFajrEnabled;
+    appSvc.currentVolume = &currentVolume;
+    appSvc.minVolume = MIN_VOLUME;
+    appSvc.maxVolume = MAX_VOLUME;
+    appSvc.currentAzanIndex = &currentAzanIndex;
+    appSvc.numAzanFiles = numAzanFiles;
+    appSvc.azanFiles = azanFiles;
+    appSvc.uiSelectedAzanPath = uiSelectedAzan;
+    appSvc.uiSelectedAzanPathSize = sizeof(uiSelectedAzan);
+    appSvc.prayerBinPath = DEFAULT_PRAYER_TIMES_FILE;
+    appSvc.prayerRecordSize = BYTES_PER_DAY;
+    appSvc.cachedPrayerTimes = &cachedPrayerTimes;
+    appSvc.cachedPrayerDay = &cachedPrayerDay;
+    appSvc.cachedPrayerTimesValid = &cachedPrayerTimesValid;
+    appSvc.saveVolumeToNvs = saveVolumeToNVS;
+    appSvc.savePreFajrToNvs = savePreFajrToNVS;
+    appSvc.saveAzanIndexToNvs = saveAzanIndexToNVS;
+    appSvc.saveAzanPathToNvs = saveAzanPathToNVS;
+    appSvc.readDayRecord = readDayRecordBridge;
+    appCoord.begin(uiBridge, appSvc);
+    
+    appLog(APP_LOG_INFO, "BOOT", "Initializing audio manager...");
+    AudioManager::Config audioCfg{};
+    audioCfg.pins = {I2S_BCLK, I2S_LRC, I2S_DOUT};
+    audioCfg.defaultVolume = DEFAULT_VOLUME;
+    audioMgr.begin(storageMgr, audioCfg, appLog);
+    
+    appLog(APP_LOG_INFO, "BOOT", "Initializing Bluetooth audio streaming mode...");
+    BluetoothAudioMode::Config btAudioCfg{};
+    btAudioMode.begin(btAudioCfg, appLog);
+    
+    appLog(APP_LOG_INFO, "BOOT", "Initializing Bluetooth manager...");
+    bluetoothMgr.begin();
+    
+    appLog(APP_LOG_INFO, "BOOT", "Initializing prayer scheduler...");
+    PrayerScheduler::Config prayerCfg{};
+    prayerCfg.prayerBinPath = DEFAULT_PRAYER_TIMES_FILE;
+    prayerCfg.recordSize = BYTES_PER_DAY;
+    PrayerScheduler::Hooks prayerHooks{};
+    prayerHooks.playAzan = prayerPlayAzan;
+    prayerHooks.isAudioPlaying = prayerIsAudioPlaying;
+    prayerHooks.setAudioPlaying = prayerSetAudioPlaying;
+    prayerHooks.setCurrentFile = prayerSetCurrentFile;
+    prayerHooks.getAzanPath = activeAzanPath;
+    prayerHooks.preFajrEnabled = &preFajrEnabled;
+    prayerHooks.lastPreFajrDay = &lastPreFajrDay;
+    prayerSched.begin(timeMgr, storageMgr, prayerCfg, prayerHooks);
+    
+    appLog(APP_LOG_INFO, "BOOT", "Initializing system coordinator...");
+    SystemCoordinator::Config sysCoordCfg{};
+    sysCoord.begin(uiBridge, appCoord, timeMgr, prayerSched, bluetoothMgr, sysCoordCfg);
+    sysCoord.setIsAudioPlayingPtr(&isAudioPlaying);
+    
+    // Load saved preferences
     currentVolume = loadVolumeFromNVS();
     loadUiPrefsFromNVS();
-
-    TimeManager::Config tmCfg;
-    tmCfg.ntpServer = "pool.ntp.org";
-    timeMgr.begin(tmCfg, moduleLog);
-    appLogInit(&timeMgr);
-    syncDebugOffset();
-    timeMgr.setWifiConnected(false);
-
-    PrayerScheduler::Hooks ph{};
-    ph.playAzan = []() { playAudioFile(activeAzanPath()); };
-    ph.setAudioPlaying = [](bool v) {
-        isAudioPlaying = v;
-        if (v) audioStartTime = millis();
-    };
-    ph.setCurrentFile = [](const char* p) { currentPlayingFile = p ? p : ""; };
-    ph.getAzanPath = activeAzanPath;
-    ph.preFajrEnabled = &preFajrEnabled;
-    ph.lastPreFajrDay = &lastPreFajrDay;
-    PrayerScheduler::Config pcfg;
-    pcfg.prayerBinPath = DEFAULT_PRAYER_TIMES_FILE;
-    pcfg.recordSize = BYTES_PER_DAY;
-    prayerSched.begin(timeMgr, storageMgr, pcfg, ph);
-
-    AudioManager::Config audioCfg;
-    audioCfg.pins = {I2S_BCLK, I2S_LRC, I2S_DOUT};
-    audioCfg.defaultVolume = currentVolume;
-    audioMgr.begin(storageMgr, audioCfg, moduleLog);
-    audioMgr.setVolume(currentVolume);
-
-    bluetoothMgr.begin();
-
+    
 #if !defined(MINI_AZAN_TOUCH_VALIDATION_MODE) || !MINI_AZAN_TOUCH_VALIDATION_MODE
-    uiBridge.begin();
-    AppServices svc{};
-    svc.audio = &audioMgr;
-    svc.storage = &storageMgr;
-    svc.time = &timeMgr;
-    svc.isAudioPlaying = &isAudioPlaying;
-    svc.preFajrEnabled = &preFajrEnabled;
-    svc.currentVolume = &currentVolume;
-    svc.minVolume = MIN_VOLUME;
-    svc.maxVolume = MAX_VOLUME;
-    svc.currentAzanIndex = &currentAzanIndex;
-    svc.numAzanFiles = numAzanFiles;
-    svc.azanFiles = azanFiles;
-    svc.prayerBinPath = DEFAULT_PRAYER_TIMES_FILE;
-    svc.prayerRecordSize = BYTES_PER_DAY;
-    svc.cachedPrayerTimes = &cachedPrayerTimes;
-    svc.cachedPrayerDay = &cachedPrayerDay;
-    svc.cachedPrayerTimesValid = &cachedPrayerTimesValid;
-    svc.storageJobs = &storageJobs;
-    svc.bluetooth = &bluetoothMgr;
-    svc.saveVolumeToNvs = saveVolumeToNVS;
-    svc.savePreFajrToNvs = savePreFajrToNVS;
-    svc.saveAzanIndexToNvs = saveAzanIndexToNVS;
-    svc.saveAzanPathToNvs = saveAzanPathToNVS;
-    svc.uiSelectedAzanPath = uiSelectedAzan;
-    svc.uiSelectedAzanPathSize = sizeof(uiSelectedAzan);
-    svc.readDayRecord = readDayRecordBridge;
-    appCoord.begin(uiBridge, svc);
-
-    SystemCoordinator::Config scCfg{};
-    sysCoord.begin(uiBridge, appCoord, timeMgr, prayerSched, bluetoothMgr, scCfg);
-    sysCoord.setIsAudioPlayingPtr(&isAudioPlaying);
-
-    if (uiMgr.begin(uiBridge)) {
-        sysLog(LOG_INFO, "UI", "LVGL UI enabled");
-    }
+    appLog(APP_LOG_INFO, "BOOT", "Initializing UI...");
+    uiMgr.begin(uiBridge);
 #else
-    if (!touchOverlay.begin()) {
-        sysLog(LOG_ERROR, "TVAL", "Touch validation overlay failed");
-    } else {
-        sysLog(LOG_INFO, "TVAL", "Touch validation active — audio/RTC/SD offline");
-    }
+    appLog(APP_LOG_INFO, "BOOT", "Initializing touch validation overlay...");
+    touchOverlay.begin();
 #endif
 
-    MemoryGuard::logBootSnapshot();
-    printStatus();
+    appLog(APP_LOG_INFO, "BOOT", "=== Boot complete ===");
 }
 
 void loop() {

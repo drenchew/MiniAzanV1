@@ -9,6 +9,7 @@
 #include "AppTypes.h"
 
 class BluetoothManager;
+class BluetoothAudioMode;
 
 struct AppServices {
     AudioManager* audio = nullptr;
@@ -16,6 +17,7 @@ struct AppServices {
     TimeManager* time = nullptr;
     StorageJobQueue* storageJobs = nullptr;
     BluetoothManager* bluetooth = nullptr;
+    BluetoothAudioMode* bluetoothAudio = nullptr;  // A2DP streaming mode
 
     bool* isAudioPlaying = nullptr;
 
@@ -83,6 +85,8 @@ private:
     void handleDeleteFile(const char* path);
     void handleSelectAzanFile(const char* path);
     void handlePlayFile(const char* path);
+    void handleToggleBluetoothStreaming();
+    void handleSetBluetoothStreamVolume(uint8_t volumePct);
     bool storageBlocked() const;
     static const char* prayerName(int idx);
 

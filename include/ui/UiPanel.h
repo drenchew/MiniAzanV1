@@ -33,7 +33,7 @@ private:
     int16_t _lastTouchX = 0;
     int16_t _lastTouchY = 0;
     // kBufLines MUST match MemCfg::LVGL_DRAW_LINES in MemoryManager.h
-    static constexpr int kBufLines = 20;
+    static constexpr int kBufLines = 10;
 };
 
 #endif

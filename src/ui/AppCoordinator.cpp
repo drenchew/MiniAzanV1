@@ -3,6 +3,7 @@
 #include "AppLog.h"
 #include "system/AzanSafeMode.h"
 #include "system/BluetoothManager.h"
+#include "system/BluetoothAudioMode.h"
 #include "system/BluetoothTransferJob.h"
 #include "system/SchedPriority.h"
 
@@ -110,6 +111,8 @@ void AppCoordinator::dispatchCommand(const UiCommand& cmd) {
         case UiCmd::PauseAudio:
         case UiCmd::ResumeAudio:
             break;
+        case UiCmd::ToggleBluetoothStreaming: handleToggleBluetoothStreaming(); break;
+        case UiCmd::SetBluetoothStreamVolume: handleSetBluetoothStreamVolume(cmd.btStreamVol.volumePct); break;
         default: break;
     }
 }
@@ -434,5 +437,45 @@ void AppCoordinator::handleRequestBluetoothStatus() {
                 break;
         }
     }
+    emit(ev);
+}
+
+void AppCoordinator::handleToggleBluetoothStreaming() {
+    if (!_svc.bluetoothAudio) {
+        appLog(APP_LOG_ERROR, "COORD", "BT audio mode not available");
+        return;
+    }
+
+    bool currentlyEnabled = _svc.bluetoothAudio->isStreamingEnabled();
+    bool success = _svc.bluetoothAudio->requestStreamingMode(!currentlyEnabled);
+
+    appLogf(APP_LOG_INFO, "COORD", "BT streaming %s",
+            !currentlyEnabled ? "enabled" : "disabled");
+
+    UiEventPayload ev{};
+    ev.type = UiEvent::BluetoothStatus;
+    ev.btStreamingEnabled = !currentlyEnabled;
+    ev.btStreamingActive = _svc.bluetoothAudio->isStreamingActive();
+    ev.btStreamVolume = _svc.bluetoothAudio->getVolume();
+    emit(ev);
+}
+
+void AppCoordinator::handleSetBluetoothStreamVolume(uint8_t volumePct) {
+    if (volumePct > 100) volumePct = 100;
+
+    if (!_svc.bluetoothAudio) {
+        appLog(APP_LOG_ERROR, "COORD", "BT audio mode not available");
+        return;
+    }
+
+    _svc.bluetoothAudio->setVolume(volumePct);
+
+    appLogf(APP_LOG_INFO, "COORD", "BT stream volume set to %u%%", volumePct);
+
+    UiEventPayload ev{};
+    ev.type = UiEvent::BluetoothStatus;
+    ev.btStreamingEnabled = _svc.bluetoothAudio->isStreamingEnabled();
+    ev.btStreamingActive = _svc.bluetoothAudio->isStreamingActive();
+    ev.btStreamVolume = _svc.bluetoothAudio->getVolume();
     emit(ev);
 }

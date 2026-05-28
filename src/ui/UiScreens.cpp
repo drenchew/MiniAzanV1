@@ -349,6 +349,31 @@ void UiScreens::buildQuranPlayer(lv_obj_t* area) {
 void UiScreens::buildSystem(lv_obj_t* area) {
     _scroll = UiComponents::createScrollContent(area, 0, lv_obj_get_height(area));
 
+    // Audio Streaming section
+    lv_obj_t* titleAudio = lv_label_create(_scroll);
+    lv_label_set_text(titleAudio, "Bluetooth Audio Streaming");
+    lv_obj_set_style_text_color(titleAudio, UiTheme::kText(), 0);
+
+    lv_obj_t* cardAudio = UiComponents::createCard(_scroll, 216, 100);
+    lv_obj_t* lblAudioStatus = lv_label_create(cardAudio);
+    lv_label_set_text(lblAudioStatus, "Stream audio from\nphone to speaker");
+    lv_obj_set_width(lblAudioStatus, 200);
+    lv_obj_align(lblAudioStatus, LV_ALIGN_TOP_LEFT, 0, 0);
+
+    lv_obj_t* lblAudioSw = lv_label_create(cardAudio);
+    lv_label_set_text(lblAudioSw, "Enable");
+    lv_obj_align(lblAudioSw, LV_ALIGN_BOTTOM_LEFT, 0, -8);
+
+    lv_obj_t* swAudio = lv_switch_create(cardAudio);
+    lv_obj_align(swAudio, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_add_event_cb(swAudio, [](lv_event_t* e) {
+        if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
+        UiCommand c{};
+        c.cmd = UiCmd::ToggleBluetoothStreaming;
+        if (g_active) g_active->sendCmd(c);
+    }, LV_EVENT_VALUE_CHANGED, nullptr);
+
+    // Bluetooth Transfer section
     lv_obj_t* title = lv_label_create(_scroll);
     lv_label_set_text(title, "Bluetooth Transfer");
     lv_obj_set_style_text_color(title, UiTheme::kText(), 0);

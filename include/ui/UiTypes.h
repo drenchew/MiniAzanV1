@@ -24,6 +24,8 @@ enum class UiCmd : uint8_t {
     PlayFile,
     PauseAudio,
     ResumeAudio,
+    ToggleBluetoothStreaming,    // Enable/disable A2DP streaming
+    SetBluetoothStreamVolume,     // Set BT streaming volume (separate from azan)
 };
 
 /** System → UI (consumed on LVGL task). */
@@ -104,6 +106,10 @@ struct UiCmdPlayFile {
     char path[64];
 };
 
+struct UiCmdSetBluetoothStreamVolume {
+    uint8_t volumePct;  // 0-100 UI scale
+};
+
 struct UiFileEntry {
     char name[48];
     uint32_t size;
@@ -125,6 +131,10 @@ struct UiEventPayload {
     bool btTransferActive = false;
     uint8_t btProgressPct = 0;
     char btStatusMsg[48]{};
+    
+    bool btStreamingEnabled = false;        // A2DP streaming mode
+    bool btStreamingActive = false;         // Actively streaming
+    uint8_t btStreamVolume = 50;            // 0-100 UI scale
 
     bool sdReady = false;
     bool rtcOk = false;
@@ -169,4 +179,5 @@ struct UiCommand {
     UiCmdDeleteFile del{};
     UiCmdSelectAzanFile azanPath{};
     UiCmdPlayFile play{};
+    UiCmdSetBluetoothStreamVolume btStreamVol{};
 };
