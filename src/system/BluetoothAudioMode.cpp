@@ -29,9 +29,9 @@
 #include <BluetoothA2DPSink.h>
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Global instance for A2DP sink (created once at module init)
+//  Global instance (created on demand when streaming is enabled)
 // ─────────────────────────────────────────────────────────────────────────────
-static BluetoothA2DPSink g_a2dp_sink;
+static BluetoothA2DPSink* g_a2dp_sink = nullptr;
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  BluetoothAudioMode implementation
@@ -209,24 +209,22 @@ void BluetoothAudioMode::drainCommands() {
             _streamingEnabled = true;
             logf(APP_LOG_INFO, "BTAUDIO", "A2DP streaming mode enabled");
             
-            // Create and start BluetoothA2DPSink instance
-            static BluetoothA2DPSink a2dp_sink;
-            
-            // Set up audio output (I2S pins) - configure pin structure
-            i2s_pin_config_t pin_config = {
-                .bck_io_num = 26,      // GPIO26 = BCLK
-                .ws_io_num = 25,       // GPIO25 = LRC
-                .data_out_num = 27,    // GPIO27 = DOUT
-                .data_in_num = -1      // Not used for output
-            };
-            a2dp_sink.set_pin_config(pin_config);
-            
-            // Optional: set custom callbacks
-            // a2dp_sink.set_on_connection_state_changed(callback);
-            // a2dp_sink.set_on_audio_state_changed(callback);
+            // Create A2DP sink on first use (lazy initialization)
+            if (!g_a2dp_sink) {
+                g_a2dp_sink = new BluetoothA2DPSink();
+                
+                // Configure I2S pins
+                i2s_pin_config_t pin_config = {
+                    .bck_io_num = 26,      // GPIO26 = BCLK
+                    .ws_io_num = 25,       // GPIO25 = LRC
+                    .data_out_num = 27,    // GPIO27 = DOUT
+                    .data_in_num = -1      // Not used for output
+                };
+                g_a2dp_sink->set_pin_config(pin_config);
+            }
             
             // Start the A2DP sink (this makes device discoverable)
-            a2dp_sink.start("MiniAzan Speaker");
+            g_a2dp_sink->start("MiniAzan Speaker");
             logf(APP_LOG_INFO, "BTAUDIO", "Device is now discoverable as 'MiniAzan Speaker'");
             _deviceConnected = false;
             _streamingActive = false;
@@ -238,9 +236,10 @@ void BluetoothAudioMode::drainCommands() {
             _streamingActive = false;
             logf(APP_LOG_INFO, "BTAUDIO", "A2DP streaming mode disabled");
             
-            // Stop the A2DP sink
-            static BluetoothA2DPSink a2dp_sink;
-            a2dp_sink.end();
+            // Stop the A2DP sink but keep it allocated
+            if (g_a2dp_sink) {
+                g_a2dp_sink->end();
+            }
             break;
         }
 
@@ -261,18 +260,7 @@ void BluetoothAudioMode::drainCommands() {
 }
 
 bool BluetoothAudioMode::initA2dp() {
-    logf(APP_LOG_INFO, "BTAUDIO", "Initializing A2DP stack with BluetoothA2DPSink...");
-
-    // Configure I2S pins for the global A2DP sink
-    i2s_pin_config_t pin_config = {
-        .bck_io_num = 26,      // GPIO26 = BCLK
-        .ws_io_num = 25,       // GPIO25 = LRC
-        .data_out_num = 27,    // GPIO27 = DOUT
-        .data_in_num = -1      // Not used for output
-    };
-    g_a2dp_sink.set_pin_config(pin_config);
-    
-    logf(APP_LOG_INFO, "BTAUDIO", "✓ A2DP stack ready");
+    logf(APP_LOG_INFO, "BTAUDIO", "A2DP stack ready (will initialize on first use)");
     return true;
 }
 
