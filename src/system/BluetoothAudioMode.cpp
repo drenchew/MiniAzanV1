@@ -26,12 +26,36 @@
 #include <esp_heap_caps.h>
 #include <cstring>
 #include <cstdarg>
-#include <BluetoothA2DPSink.h>
+#include <esp_bt.h>
+#include <esp_bt_main.h>
+#include <esp_gap_bt_api.h>
 
 // ─────────────────────────────────────────────────────────────────────────────
-//  Global instance (created on demand when streaming is enabled)
+//  Global Bluetooth state
 // ─────────────────────────────────────────────────────────────────────────────
-static BluetoothA2DPSink* g_a2dp_sink = nullptr;
+static bool g_bt_controller_initialized = false;
+
+// GAP callback handler
+static void esp_bt_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param) {
+    switch (event) {
+    case ESP_BT_GAP_AUTH_CMPL_EVT:
+        if (param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS) {
+            // Auth complete
+        }
+        break;
+    case ESP_BT_GAP_PIN_REQ_EVT: {
+        uint8_t pin_code[] = {0x30, 0x30, 0x30, 0x30};  // "0000"
+        esp_bt_gap_pin_reply(param->pin_req.bda, true, 4, pin_code);
+        break;
+    }
+    case ESP_BT_GAP_CFM_REQ_EVT:
+        // Handle confirmation request
+        esp_bt_gap_ssp_confirm_reply(param->cfm_req.bda, true);
+        break;
+    default:
+        break;
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  BluetoothAudioMode implementation
@@ -73,7 +97,7 @@ bool BluetoothAudioMode::begin(const Config& cfg, LogFn logFn) {
         return false;
     }
 
-    // Initialize A2DP stack (placeholder — actual implementation below)
+    // Initialize A2DP stack (which initializes Bluetooth controller)
     if (!initA2dp()) {
         logf(APP_LOG_ERROR, "BTAUDIO", "Failed to initialize A2DP stack");
         vQueueDelete(_cmdQ);
@@ -208,24 +232,7 @@ void BluetoothAudioMode::drainCommands() {
         case CmdType::EnableStreaming: {
             _streamingEnabled = true;
             logf(APP_LOG_INFO, "BTAUDIO", "A2DP streaming mode enabled");
-            
-            // Create A2DP sink on first use (lazy initialization)
-            if (!g_a2dp_sink) {
-                g_a2dp_sink = new BluetoothA2DPSink();
-                
-                // Configure I2S pins
-                i2s_pin_config_t pin_config = {
-                    .bck_io_num = 26,      // GPIO26 = BCLK
-                    .ws_io_num = 25,       // GPIO25 = LRC
-                    .data_out_num = 27,    // GPIO27 = DOUT
-                    .data_in_num = -1      // Not used for output
-                };
-                g_a2dp_sink->set_pin_config(pin_config);
-            }
-            
-            // Start the A2DP sink (this makes device discoverable)
-            g_a2dp_sink->start("MiniAzan Speaker");
-            logf(APP_LOG_INFO, "BTAUDIO", "Device is now discoverable as 'MiniAzan Speaker'");
+            // Device is already discoverable from boot
             _deviceConnected = false;
             _streamingActive = false;
             break;
@@ -235,11 +242,7 @@ void BluetoothAudioMode::drainCommands() {
             _streamingEnabled = false;
             _streamingActive = false;
             logf(APP_LOG_INFO, "BTAUDIO", "A2DP streaming mode disabled");
-            
-            // Stop the A2DP sink but keep it allocated
-            if (g_a2dp_sink) {
-                g_a2dp_sink->end();
-            }
+            // Keep device discoverable - user might want to pair again
             break;
         }
 
@@ -260,7 +263,63 @@ void BluetoothAudioMode::drainCommands() {
 }
 
 bool BluetoothAudioMode::initA2dp() {
-    logf(APP_LOG_INFO, "BTAUDIO", "A2DP stack ready (will initialize on first use)");
+    logf(APP_LOG_INFO, "BTAUDIO", "Initializing Bluetooth controller...");
+    
+    // 1. Initialize BT controller
+    esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+    bt_cfg.mode = ESP_BT_MODE_CLASSIC_BT;
+    
+    esp_err_t err = esp_bt_controller_init(&bt_cfg);
+    if (err != ESP_OK) {
+        logf(APP_LOG_ERROR, "BTAUDIO", "BT controller init failed: 0x%x", err);
+        return false;
+    }
+
+    // 2. Enable BT controller
+    err = esp_bt_controller_enable(ESP_BT_MODE_CLASSIC_BT);
+    if (err != ESP_OK) {
+        logf(APP_LOG_ERROR, "BTAUDIO", "BT controller enable failed: 0x%x", err);
+        return false;
+    }
+
+    // 3. Initialize Bluedroid
+    err = esp_bluedroid_init();
+    if (err != ESP_OK) {
+        logf(APP_LOG_ERROR, "BTAUDIO", "Bluedroid init failed: 0x%x", err);
+        esp_bt_controller_disable();
+        return false;
+    }
+
+    // 4. Enable Bluedroid
+    err = esp_bluedroid_enable();
+    if (err != ESP_OK) {
+        logf(APP_LOG_ERROR, "BTAUDIO", "Bluedroid enable failed: 0x%x", err);
+        esp_bluedroid_deinit();
+        esp_bt_controller_disable();
+        return false;
+    }
+
+    // 5. Register GAP callbacks (for handling pairing, etc.)
+    err = esp_bt_gap_register_callback(esp_bt_gap_callback);
+    if (err != ESP_OK) {
+        logf(APP_LOG_ERROR, "BTAUDIO", "Failed to register GAP callback: 0x%x", err);
+        return false;
+    }
+
+    // 6. Set Simple Secure Pairing mode
+    uint8_t io_cap = ESP_BT_IO_CAP_NONE;
+    esp_bt_gap_set_security_param(ESP_BT_SP_IOCAP_MODE, &io_cap, sizeof(io_cap));
+
+    // 7. Make device discoverable immediately (for pairing)
+    err = esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
+    if (err != ESP_OK) {
+        logf(APP_LOG_ERROR, "BTAUDIO", "Failed to set scan mode: 0x%x", err);
+        return false;
+    }
+    logf(APP_LOG_INFO, "BTAUDIO", "Device is discoverable");
+
+    g_bt_controller_initialized = true;
+    logf(APP_LOG_INFO, "BTAUDIO", "✓ Bluetooth stack initialized and discoverable");
     return true;
 }
 
