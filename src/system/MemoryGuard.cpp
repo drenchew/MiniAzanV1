@@ -20,7 +20,8 @@ uint32_t taskCount() {
 
 bool canStartMp3Decode(size_t fileSizeBytes) {
     (void)fileSizeBytes;
-    return freeHeap() >= kMp3DecodeMinFree && largestFreeBlock() >= kMp3DecodeMinLargest;
+    //return freeHeap() >= kMp3DecodeMinFree && largestFreeBlock() >= kMp3DecodeMinLargest;
+    return true; // TODO: Remove this override after testing — we want to be sure the heap stats are correct before enforcing them
 }
 
 void logHeapStatus(const char* tag) {

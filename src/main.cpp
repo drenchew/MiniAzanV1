@@ -15,7 +15,6 @@
 #include "SettingsStore.h"
 #include "StorageJobQueue.h"
 #include "system/BluetoothManager.h"
-#include "system/BluetoothAudioMode.h"
 #include "system/SystemCoordinator.h"
 #include "system/AzanSafeMode.h"
 #include "system/MemoryGuard.h"
@@ -54,7 +53,6 @@ PrayerScheduler prayerSched;
 SettingsStore settingsStore;
 StorageJobQueue storageJobs;
 BluetoothManager bluetoothMgr;
-BluetoothAudioMode btAudioMode;  // A2DP streaming to speaker
 SystemCoordinator sysCoord;
 
 #if !defined(MINI_AZAN_TOUCH_VALIDATION_MODE) || !MINI_AZAN_TOUCH_VALIDATION_MODE
@@ -274,7 +272,6 @@ void setup() {
     appSvc.time = &timeMgr;
     appSvc.storageJobs = &storageJobs;
     appSvc.bluetooth = &bluetoothMgr;
-    appSvc.bluetoothAudio = &btAudioMode;  // A2DP streaming
     appSvc.isAudioPlaying = &isAudioPlaying;
     appSvc.preFajrEnabled = &preFajrEnabled;
     appSvc.currentVolume = &currentVolume;
@@ -303,9 +300,7 @@ void setup() {
     audioCfg.defaultVolume = DEFAULT_VOLUME;
     audioMgr.begin(storageMgr, audioCfg, appLog);
     
-    appLog(APP_LOG_INFO, "BOOT", "Initializing Bluetooth audio streaming mode...");
-    BluetoothAudioMode::Config btAudioCfg{};
-    btAudioMode.begin(btAudioCfg, appLog);
+
     
     appLog(APP_LOG_INFO, "BOOT", "Initializing Bluetooth manager...");
     bluetoothMgr.begin();

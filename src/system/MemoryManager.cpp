@@ -45,10 +45,10 @@ HeapBlockPool<MemCfg::AUDIO_BLOCK_SIZE,  MemCfg::AUDIO_BLOCK_COUNT>  gAudioPool;
 HeapBlockPool<MemCfg::SD_BLOCK_SIZE,     MemCfg::SD_BLOCK_COUNT>     gSdStreamPool;
 
 /// P3 — Bluetooth SPP TX staging (BluetoothManager only)
-HeapBlockPool<MemCfg::BT_TX_BLOCK_SIZE,  MemCfg::BT_TX_BLOCK_COUNT>  gBtTxPool;
+//HeapBlockPool<MemCfg::BT_TX_BLOCK_SIZE,  MemCfg::BT_TX_BLOCK_COUNT>  gBtTxPool;
 
 /// P3 — Bluetooth SPP RX staging (BluetoothManager only)
-HeapBlockPool<MemCfg::BT_RX_BLOCK_SIZE,  MemCfg::BT_RX_BLOCK_COUNT>  gBtRxPool;
+//HeapBlockPool<MemCfg::BT_RX_BLOCK_SIZE,  MemCfg::BT_RX_BLOCK_COUNT>  gBtRxPool;
 
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -131,40 +131,40 @@ void begin() {
     appLogf(APP_LOG_INFO, "MPOOL", "  ✓ AudioPool ready  @0x%08x  4096 B",
             (unsigned)gAudioPool._blocks[0]);
 
-    // 4. BtRxPool — 2048 B
-    appLogf(APP_LOG_INFO, "MPOOL", "Allocating BtRxPool (2048 B)...");
-    if (!gBtRxPool.allocateHeap()) {
-        appLogf(APP_LOG_ERROR, "MPOOL",
-                "FATAL: BtRxPool heap allocation failed — device restart required");
-        heap_caps_free(gLvglDrawBufA);
-        //heap_caps_free(gLvglDrawBufB);
-        gLvglDrawBufA = nullptr;
-      //  gLvglDrawBufB = nullptr;
-        gSdStreamPool.cleanup();
-        gAudioPool.cleanup();
-        return;
-    }
-    gBtRxPool.initFreeList();
-    appLogf(APP_LOG_INFO, "MPOOL", "  ✓ BtRxPool ready  @0x%08x  2048 B",
-            (unsigned)gBtRxPool._blocks[0]);
+//     // 4. BtRxPool — 2048 B
+//     appLogf(APP_LOG_INFO, "MPOOL", "Allocating BtRxPool (2048 B)...");
+//     if (!gBtRxPool.allocateHeap()) {
+//         appLogf(APP_LOG_ERROR, "MPOOL",
+//                 "FATAL: BtRxPool heap allocation failed — device restart required");
+//         heap_caps_free(gLvglDrawBufA);
+//         //heap_caps_free(gLvglDrawBufB);
+//         gLvglDrawBufA = nullptr;
+//       //  gLvglDrawBufB = nullptr;
+//         gSdStreamPool.cleanup();
+//         gAudioPool.cleanup();
+//         return;
+//     }
+//     gBtRxPool.initFreeList();
+//     appLogf(APP_LOG_INFO, "MPOOL", "  ✓ BtRxPool ready  @0x%08x  2048 B",
+//             (unsigned)gBtRxPool._blocks[0]);
 
-    // 5. BtTxPool — 2048 B
-    appLogf(APP_LOG_INFO, "MPOOL", "Allocating BtTxPool (2048 B)...");
-    if (!gBtTxPool.allocateHeap()) {
-        appLogf(APP_LOG_ERROR, "MPOOL",
-                "FATAL: BtTxPool heap allocation failed — device restart required");
-        heap_caps_free(gLvglDrawBufA);
-        //heap_caps_free(gLvglDrawBufB);
-        gLvglDrawBufA = nullptr;
-       // gLvglDrawBufB = nullptr;
-        gSdStreamPool.cleanup();
-        gAudioPool.cleanup();
-        gBtRxPool.cleanup();
-        return;
-    }
-    gBtTxPool.initFreeList();
-    appLogf(APP_LOG_INFO, "MPOOL", "  ✓ BtTxPool ready  @0x%08x  2048 B",
-            (unsigned)gBtTxPool._blocks[0]);
+//     // 5. BtTxPool — 2048 B
+//     appLogf(APP_LOG_INFO, "MPOOL", "Allocating BtTxPool (2048 B)...");
+//     if (!gBtTxPool.allocateHeap()) {
+//         appLogf(APP_LOG_ERROR, "MPOOL",
+//                 "FATAL: BtTxPool heap allocation failed — device restart required");
+//         heap_caps_free(gLvglDrawBufA);
+//         //heap_caps_free(gLvglDrawBufB);
+//         gLvglDrawBufA = nullptr;
+//        // gLvglDrawBufB = nullptr;
+//         gSdStreamPool.cleanup();
+//         gAudioPool.cleanup();
+//         gBtRxPool.cleanup();
+//         return;
+//     }
+//     gBtTxPool.initFreeList();
+//     appLogf(APP_LOG_INFO, "MPOOL", "  ✓ BtTxPool ready  @0x%08x  2048 B",
+//             (unsigned)gBtTxPool._blocks[0]);
 
     // ── Boot log: all pools allocated successfully ───────────────────────────
     appLogf(APP_LOG_INFO, "MPOOL",
@@ -197,21 +197,21 @@ void logStats(const char* tag) {
             (unsigned long)gAudioPool.acquireFail(),
             (unsigned)gAudioPool.blockSize());
 
-    appLogf(APP_LOG_INFO, t,
-            "bt_rx_pool   free=%u/%u  ok=%lu  fail=%lu  blk=%uB",
-            (unsigned)gBtRxPool.freeCount(),
-            (unsigned)gBtRxPool.totalCount(),
-            (unsigned long)gBtRxPool.acquireOk(),
-            (unsigned long)gBtRxPool.acquireFail(),
-            (unsigned)gBtRxPool.blockSize());
+//     appLogf(APP_LOG_INFO, t,
+//             "bt_rx_pool   free=%u/%u  ok=%lu  fail=%lu  blk=%uB",
+//             (unsigned)gBtRxPool.freeCount(),
+//             (unsigned)gBtRxPool.totalCount(),
+//             (unsigned long)gBtRxPool.acquireOk(),
+//             (unsigned long)gBtRxPool.acquireFail(),
+//             (unsigned)gBtRxPool.blockSize());
 
-    appLogf(APP_LOG_INFO, t,
-            "bt_tx_pool   free=%u/%u  ok=%lu  fail=%lu  blk=%uB",
-            (unsigned)gBtTxPool.freeCount(),
-            (unsigned)gBtTxPool.totalCount(),
-            (unsigned long)gBtTxPool.acquireOk(),
-            (unsigned long)gBtTxPool.acquireFail(),
-            (unsigned)gBtTxPool.blockSize());
+    //appLogf(APP_LOG_INFO, t,
+        //     "bt_tx_pool   free=%u/%u  ok=%lu  fail=%lu  blk=%uB",
+        //     (unsigned)gBtTxPool.freeCount(),
+        //     (unsigned)gBtTxPool.totalCount(),
+        //     (unsigned long)gBtTxPool.acquireOk(),
+        //     (unsigned long)gBtTxPool.acquireFail(),
+        //     (unsigned)gBtTxPool.blockSize());
 
     appLogf(APP_LOG_INFO, t,
             "lvgl_dma     bufA=0x%08x  bufB=0x%08x  px=%u  bytes=%u",

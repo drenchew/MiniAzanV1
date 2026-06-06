@@ -57,7 +57,7 @@ namespace MemCfg {
 /// Bytes per audio staging block (one MP3 frame + header headroom)
 constexpr size_t AUDIO_BLOCK_SIZE  = 512;
 /// Number of staging blocks — covers 3–4 concurrent MP3 frames
-constexpr size_t AUDIO_BLOCK_COUNT = 8;       // 4 096 B total
+constexpr size_t AUDIO_BLOCK_COUNT = 12;       // 4 096 B total
 
 // ── SD streaming read chunks (fatfs reads into these before decode) ──────────
 /// Bytes per SD read chunk — matches typical FAT sector multiple
@@ -65,13 +65,13 @@ constexpr size_t SD_BLOCK_SIZE  = 1024;
 /// Number of SD read blocks
 constexpr size_t SD_BLOCK_COUNT = 8;          // 8 192 B total
 
-// ── Bluetooth SPP TX staging ─────────────────────────────────────────────────
-constexpr size_t BT_TX_BLOCK_SIZE  = 512;
-constexpr size_t BT_TX_BLOCK_COUNT = 4;       // 2 048 B total
+// // ── Bluetooth SPP TX staging ─────────────────────────────────────────────────
+// constexpr size_t BT_TX_BLOCK_SIZE  = 512;
+// constexpr size_t BT_TX_BLOCK_COUNT = 4;       // 2 048 B total
 
-// ── Bluetooth SPP RX staging ─────────────────────────────────────────────────
-constexpr size_t BT_RX_BLOCK_SIZE  = 512;
-constexpr size_t BT_RX_BLOCK_COUNT = 4;       // 2 048 B total
+// // ── Bluetooth SPP RX staging ─────────────────────────────────────────────────
+// constexpr size_t BT_RX_BLOCK_SIZE  = 512;
+// constexpr size_t BT_RX_BLOCK_COUNT = 4;       // 2 048 B total
 
 // ── LVGL DMA draw buffers ────────────────────────────────────────────────────
 /// Display width in pixels (ILI9341 portrait)
@@ -87,9 +87,9 @@ constexpr size_t LVGL_DRAW_BYTES  = LVGL_DRAW_PIXELS * 2;              // 9 600 
 constexpr size_t TOTAL_POOL_BYTES =
     (AUDIO_BLOCK_SIZE  * AUDIO_BLOCK_COUNT) +   //  4 096 B
     (SD_BLOCK_SIZE     * SD_BLOCK_COUNT)    +   //  8 192 B
-    (BT_TX_BLOCK_SIZE  * BT_TX_BLOCK_COUNT) +   //  2 048 B
-    (BT_RX_BLOCK_SIZE  * BT_RX_BLOCK_COUNT) +   //  2 048 B
-    (LVGL_DRAW_BYTES   * 1);                    // 19 200 B (double buffer)
+    //(BT_TX_BLOCK_SIZE  * BT_TX_BLOCK_COUNT) +   //  2 048 B
+   // (BT_RX_BLOCK_SIZE  * BT_RX_BLOCK_COUNT) +   //  2 048 B
+    (LVGL_DRAW_BYTES   * 1);                    // 19 200 B (mono buffer)
     // ─────────────────────────────────────────────────────
     //  TOTAL: 35 584 B  ≈  34.75 KB  (static BSS — no heap)
 
@@ -304,9 +304,9 @@ extern HeapBlockPool<MemCfg::SD_BLOCK_SIZE,     MemCfg::SD_BLOCK_COUNT>     gSdS
 /** @defgroup BtPools  P3 — Bluetooth transfer path */
 ///@{
 /// BT SPP outbound staging — BluetoothManager only.
-extern HeapBlockPool<MemCfg::BT_TX_BLOCK_SIZE,  MemCfg::BT_TX_BLOCK_COUNT>  gBtTxPool;
+//extern HeapBlockPool<MemCfg::BT_TX_BLOCK_SIZE,  MemCfg::BT_TX_BLOCK_COUNT>  gBtTxPool;
 /// BT SPP inbound staging — BluetoothManager only.
-extern HeapBlockPool<MemCfg::BT_RX_BLOCK_SIZE,  MemCfg::BT_RX_BLOCK_COUNT>  gBtRxPool;
+//extern HeapBlockPool<MemCfg::BT_RX_BLOCK_SIZE,  MemCfg::BT_RX_BLOCK_COUNT>  gBtRxPool;
 ///@}
 
 /**
@@ -373,3 +373,15 @@ constexpr size_t totalPoolFootprint() {
 }
 
 }  // namespace MemoryManager
+
+
+
+
+// 46149|-------- --:--:--|I|AUDIO|heap free=24896 largest=17396 tasks=9 min_largest=42000
+//120014|-------- --:--:--|I|HEALTH|heap_free=24896 largest=17396 tasks=9 
+
+//|I|HEALTH|heap_free=56264 largest=49140
+//                  (5567352 bytes)
+
+//600000|-------- --:--:--|I|HEALTH|heap_free=48248 largest=40948
+// -|I|AUDIO|heap free=52608 largest=40948 tasks=9 min_largest=42000
