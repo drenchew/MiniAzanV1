@@ -4,20 +4,19 @@
 #include "ui/UiTypes.h"
 #include "AudioManager.h"
 #include "StorageManager.h"
+#include "StorageJobQueue.h"
 #include "TimeManager.h"
 #include "AppTypes.h"
 
+class BluetoothManager;
 
-/**
- * Executes UiBridge commands on a non-LVGL context (main loop or dedicated task).
- * Only module allowed to combine UI requests with StorageManager / AudioManager / NVS / WiFi.
- */
 struct AppServices {
     AudioManager* audio = nullptr;
     StorageManager* storage = nullptr;
     TimeManager* time = nullptr;
+    StorageJobQueue* storageJobs = nullptr;
+    BluetoothManager* bluetooth = nullptr;
 
-    bool* wifiIsOn = nullptr;
     bool* isAudioPlaying = nullptr;
 
     bool* preFajrEnabled = nullptr;
@@ -36,7 +35,6 @@ struct AppServices {
     int* cachedPrayerDay = nullptr;
     bool* cachedPrayerTimesValid = nullptr;
 
-    void (*toggleWifi)() = nullptr;
     void (*saveVolumeToNvs)(uint8_t) = nullptr;
     void (*savePreFajrToNvs)(bool) = nullptr;
     void (*saveAzanIndexToNvs)(uint8_t) = nullptr;
@@ -46,29 +44,53 @@ struct AppServices {
 
 class AppCoordinator {
 public:
+    static constexpr uint8_t kMaxDeferredCmds = 16;
+
     bool begin(UiBridge& bridge, const AppServices& svc);
-    void poll();
+
+    /** Drain UiBridge normal queue into internal buffer (SysCoord task only). */
+    void ingestCommands();
+
+    /** Pop one deferred command matching priority band, or false. */
+    bool popDeferredAtPriority(uint8_t priorityBand, UiCommand& out);
+
+    /** P0 fast lane — immediate stop, no audio queue wait. */
+    void executeEmergencyStop(bool* isAudioPlaying);
+
+    void dispatchCommand(const UiCommand& cmd);
+    void pollStorageResults();
+    bool tickStorageWorker();
+
+    static uint8_t commandPriority(UiCmd cmd);
 
     UiBridge& bridge() { return *_bridge; }
 
 private:
-    void dispatch(const UiCommand& cmd);
+    static void storageEmitThunk(const UiEventPayload& ev, void* user);
     void emit(const UiEventPayload& ev);
     void handleStopAudio();
-    void handleSetVolume(uint8_t v);
+    void handleSetVolumePct(uint8_t pct);
     void handlePreFajr(bool on);
     void handleAzanIndex(uint8_t idx);
-    void handleToggleWifi();
-    void handleRequestWifiStatus();
+    void handleToggleTransferMode();
+    void handleRequestBluetoothStatus();
+    void handleCancelBluetoothTransfer();
+    void handleRequestSystemStatus();
     void handleRequestClock();
     void handleRequestPrayer();
     void handleListAudioFiles();
-    void handleDeleteFile(const char* name);
+    void handleListFolder(const char* path, uint8_t page, uint32_t requestId);
+    void handleDeleteFile(const char* path);
     void handleSelectAzanFile(const char* path);
-    void handleListFiles(bool audioOnly);
+    void handlePlayFile(const char* path);
+    void handlePauseAudio();
+    void handleResumeAudio();
     bool storageBlocked() const;
+    static const char* prayerName(int idx);
 
     UiBridge* _bridge = nullptr;
     AppServices _svc{};
-    uint32_t _listSliceMs = 0;
+    UiCommand _deferred[kMaxDeferredCmds]{};
+    uint8_t _deferredCount = 0;
+    uint32_t _nextInternalListRequestId = 1;
 };

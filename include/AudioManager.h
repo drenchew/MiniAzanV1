@@ -3,8 +3,9 @@
 #include <Arduino.h>
 #include <Audio.h>
 #include "StorageManager.h"
+#include "freertos/queue.h"
 
-// Non-blocking I2S playback (ESP32-audioI2S). SD access only via StorageManager.
+// Non-blocking I2S playback (ESP32-audioI2S). All play/stop runs on AudioTask only.
 class AudioManager {
 public:
     struct Pins {
@@ -29,15 +30,32 @@ public:
     bool begin(StorageManager& storage, const Config& cfg, LogFn logFn = nullptr);
     void setVolume(uint8_t volume);
 
-    bool playFromSd(const char* path);
-    void stop();
+    /** Queue play (any task) — executed on AudioTask only. */
+    bool requestPlay(const char* path);
+    bool requestStop();
+    /** P0 fast lane: flush pending plays, wake AudioTask immediately. */
+    bool requestEmergencyStop();
+    bool requestSetVolume(uint8_t volume);
+
     bool isRunning();
+    bool isPlayingFlag() const { return _playing; }
 
     Audio& library() { return _audio; }
 
 private:
+    enum class CmdType : uint8_t { Play = 0, Stop, SetVolume };
+
+    struct Command {
+        CmdType type = CmdType::Stop;
+        char path[64]{};
+        uint8_t volume = 0;
+    };
+
     static void taskEntry(void* arg);
     void taskLoop();
+    void drainCommands();
+    bool playFromSdInternal(const char* path);
+    void stopInternal();
     void logf(int level, const char* tag, const char* fmt, ...) const;
 
     Config _cfg{};
@@ -45,6 +63,7 @@ private:
     StorageManager* _storage = nullptr;
     Audio _audio;
 
+    QueueHandle_t _cmdQ = nullptr;
     TaskHandle_t _task = nullptr;
     volatile bool _playing = false;
 };

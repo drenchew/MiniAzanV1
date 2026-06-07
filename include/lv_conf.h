@@ -12,7 +12,7 @@
 #define LV_COLOR_16_SWAP   0
 
 #define LV_MEM_CUSTOM      0
-#define LV_MEM_SIZE        (36U * 1024U)
+#define LV_MEM_SIZE        (28U * 1024U)
 #define LV_MEM_BUF_MAX_NUM 8
 
 #define LV_USE_LOG         0
@@ -29,6 +29,8 @@
 #define LV_USE_SLIDER   1
 #define LV_USE_LIST     1
 #define LV_USE_SWITCH   1
+#define LV_USE_BAR      1
+#define LV_USE_FLEX     1
 #define LV_USE_ARC      0
 #define LV_USE_CHART    0
 #define LV_USE_TABLE    0

@@ -46,14 +46,49 @@ public:
     bool uploadWrite(const uint8_t* data, size_t len);
     void uploadEnd(bool success);
 
-    bool listRootFilesJson(String& jsonOut);
-    int listRootFilesDebug(void (*logLine)(const char* line));
+    struct DirEntry {
+        char name[48];
+        uint32_t size = 0;
+        bool isFolder = false;
+    };
 
-private:
+    /**
+     * Stream one file entry per call (iterator cursor advances on success).
+     * @return 1 entry, 0 end of directory, -1 busy/error, -2 paused (azan lock)
+     */
+    int listNextFile(const char* dirPath, int& cursor, DirEntry& out, int* totalOut = nullptr);
+
+    /** @deprecated Use listNextFile streaming API from SDJob only. */
+    bool listRootFilesJson(String& jsonOut);
+    bool listDirectoryJson(const char* dirPath, String& jsonOut);
+
+    int listDirectoryPage(const char* dirPath, DirEntry* out, int maxEntries, int skip,
+                          int* totalOut);
+
+    int listRootFilesDebug(void (*logLine)(const char* line));
     bool takeLock(TickType_t timeout, bool ignorePlaybackLock = false);
     void giveLock();
     void logf(int level, const char* tag, const char* fmt, ...) const;
     static String normalizePath(const char* path);
+    static void normalizePathTo(const char* path, char* out, size_t outLen);
+
+private:
+    /** Cache directory listing to avoid repeated slow SD scans. */
+    static constexpr int MAX_CACHE_ENTRIES = 256;
+    struct DirCache {
+        char path[80] = {};
+        DirEntry entries[MAX_CACHE_ENTRIES] = {};
+        int count = 0;
+        uint32_t timestamp = 0;
+    };
+    
+    DirCache _dirCache{};
+    
+    /** Load entire directory into cache. Returns count or -1 on error. */
+    int _loadDirectoryCache(const char* dirPath);
+    
+    /** Clear cache when navigating away or invalidating. */
+    void _clearCache();
 
     Config _cfg{};
     LogFn _log = nullptr;

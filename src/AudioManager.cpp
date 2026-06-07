@@ -1,4 +1,7 @@
 #include "AudioManager.h"
+#include "system/AzanSafeMode.h"
+#include "system/MemoryGuard.h"
+#include <stdarg.h>
 
 #ifndef LOG_ERROR
 #define LOG_ERROR 0
@@ -22,6 +25,13 @@ bool AudioManager::begin(StorageManager& storage, const Config& cfg, LogFn logFn
     _storage = &storage;
     _log = logFn;
 
+    if (!_cmdQ) {
+        _cmdQ = xQueueCreate(4, sizeof(Command));
+    }
+    if (!_cmdQ) {
+        return false;
+    }
+
     _audio.setPinout(_cfg.pins.bclk, _cfg.pins.lrc, _cfg.pins.dout);
     _audio.setVolume(_cfg.defaultVolume);
 
@@ -39,18 +49,84 @@ bool AudioManager::begin(StorageManager& storage, const Config& cfg, LogFn logFn
         return false;
     }
 
-    logf(LOG_INFO, "AUDIO", "I2S task core=%d prio=%u | VSPI SD via StorageManager",
+    logf(LOG_INFO, "AUDIO", "AudioTask core=%d prio=%u (queue-driven)",
          (int)_cfg.taskCore, (unsigned)_cfg.taskPriority);
     return true;
 }
 
-void AudioManager::setVolume(uint8_t volume) {
-    if (volume < _cfg.minVolume) volume = _cfg.minVolume;
-    if (volume > _cfg.maxVolume) volume = _cfg.maxVolume;
-    _audio.setVolume(volume);
+bool AudioManager::requestPlay(const char* path) {
+    if (!_cmdQ || !path || !path[0]) {
+        return false;
+    }
+    Command c{};
+    c.type = CmdType::Play;
+    strncpy(c.path, path, sizeof(c.path) - 1);
+    return xQueueSend(_cmdQ, &c, 0) == pdTRUE;
 }
 
-bool AudioManager::playFromSd(const char* path) {
+bool AudioManager::requestStop() {
+    if (!_cmdQ) {
+        return false;
+    }
+    Command c{};
+    c.type = CmdType::Stop;
+    return xQueueSend(_cmdQ, &c, 0) == pdTRUE;
+}
+
+bool AudioManager::requestEmergencyStop() {
+    if (!_cmdQ) {
+        return false;
+    }
+    Command dummy{};
+    while (xQueueReceive(_cmdQ, &dummy, 0) == pdTRUE) {
+    }
+    Command c{};
+    c.type = CmdType::Stop;
+    const bool ok = xQueueSend(_cmdQ, &c, 0) == pdTRUE;
+    if (_task) {
+        xTaskNotifyGive(_task);
+    }
+    return ok;
+}
+
+bool AudioManager::requestSetVolume(uint8_t volume) {
+    if (!_cmdQ) {
+        return false;
+    }
+    Command c{};
+    c.type = CmdType::SetVolume;
+    c.volume = volume;
+    return xQueueSend(_cmdQ, &c, 0) == pdTRUE;
+}
+
+void AudioManager::setVolume(uint8_t volume) {
+    requestSetVolume(volume);
+}
+
+void AudioManager::drainCommands() {
+    Command c{};
+    while (_cmdQ && xQueueReceive(_cmdQ, &c, 0) == pdTRUE) {
+        switch (c.type) {
+            case CmdType::Play:
+                playFromSdInternal(c.path);
+                break;
+            case CmdType::Stop:
+                stopInternal();
+                break;
+            case CmdType::SetVolume: {
+                uint8_t v = c.volume;
+                if (v < _cfg.minVolume) v = _cfg.minVolume;
+                if (v > _cfg.maxVolume) v = _cfg.maxVolume;
+                _audio.setVolume(v);
+                break;
+            }
+            default:
+                break;
+        }
+    }
+}
+
+bool AudioManager::playFromSdInternal(const char* path) {
     if (!_storage || !path || !path[0]) {
         logf(LOG_ERROR, "AUDIO", "Invalid path or storage");
         return false;
@@ -67,16 +143,27 @@ bool AudioManager::playFromSd(const char* path) {
         logf(LOG_ERROR, "AUDIO", "File not found: %s", path);
         return false;
     }
-    uint32_t sz = _storage->fileSize(path);
+    const uint32_t sz = _storage->fileSize(path);
     if (sz == 0) {
         logf(LOG_ERROR, "AUDIO", "File empty: %s", path);
         return false;
     }
 
+    if (!MemoryGuard::canStartMp3Decode(sz)) {
+        MemoryGuard::logHeapStatus("AUDIO");
+        logf(LOG_ERROR, "AUDIO", "Rejected play — insufficient heap for MP3");
+        return false;
+    }
+
+    stopInternal();
+
     _storage->setPlaybackLocked(true);
-    bool ok = _audio.connecttoFS(_storage->mediaFs(), path);
+    AzanSafeMode::enter(path);
+
+    const bool ok = _audio.connecttoFS(_storage->mediaFs(), path);
     if (!ok) {
         _storage->setPlaybackLocked(false);
+        AzanSafeMode::exit();
         logf(LOG_ERROR, "AUDIO", "connecttoFS failed: %s", path);
         return false;
     }
@@ -86,10 +173,15 @@ bool AudioManager::playFromSd(const char* path) {
     return true;
 }
 
-void AudioManager::stop() {
+void AudioManager::stopInternal() {
     _audio.stopSong();
     _playing = false;
-    if (_storage) _storage->setPlaybackLocked(false);
+    if (_storage) {
+        _storage->setPlaybackLocked(false);
+    }
+    if (AzanSafeMode::isActive()) {
+        AzanSafeMode::exit();
+    }
 }
 
 bool AudioManager::isRunning() {
@@ -101,12 +193,18 @@ void AudioManager::taskEntry(void* arg) {
 }
 
 void AudioManager::taskLoop() {
-    logf(LOG_DEBUG, "AUDIO", "I2S pump (library reads VSPI SD during decode)");
+    logf(LOG_DEBUG, "AUDIO", "I2S pump (VSPI SD decode only on this task)");
     while (true) {
+        ulTaskNotifyTake(pdTRUE, 0);
+        drainCommands();
         _audio.loop();
         if (_playing && !_audio.isRunning()) {
             _playing = false;
-            if (_storage) _storage->setPlaybackLocked(false);
+            if (_storage) {
+                _storage->setPlaybackLocked(false);
+            }
+            AzanSafeMode::exit();
+            logf(LOG_INFO, "AUDIO", "Playback finished");
         }
         vTaskDelay(pdMS_TO_TICKS(_cfg.loopDelayMs));
     }

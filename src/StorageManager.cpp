@@ -35,19 +35,21 @@ bool StorageManager::begin(const Config& cfg, LogFn logFn) {
         return false;
     }
 
-    pinMode(_cfg.csPin, OUTPUT);
-    digitalWrite(_cfg.csPin, HIGH);
+    SpiArch::BusInitResult bus = SpiArch::initSdBus();
+    if (!bus.ok) {
+        logf(LOG_ERROR, "STORAGE", "VSPI init failed host=%d expect=%d", bus.hostId, SpiArch::SD_HOST);
+        return false;
+    }
 
-    SPIClass& bus = SpiArch::sdSpi();
-    bus.begin(_cfg.sck, _cfg.miso, _cfg.mosi, _cfg.csPin);
-
-    if (!SD.begin(_cfg.csPin, bus)) {
+    SPIClass& spi = SpiArch::sdSpi();
+    if (!SD.begin(_cfg.csPin, spi)) {
         logf(LOG_ERROR, "STORAGE", "SD.begin failed on VSPI (CS=%d)", _cfg.csPin);
         return false;
     }
 
     _ready = true;
-    logf(LOG_INFO, "STORAGE", "SD on VSPI SCK=%d MISO=%d MOSI=%d CS=%d",
+    logf(LOG_INFO, "STORAGE", "SD on VSPI host=%d SCK=%d MISO=%d MOSI=%d CS=%d",
+         bus.hostId,
          _cfg.sck, _cfg.miso, _cfg.mosi, _cfg.csPin);
     return true;
 }
@@ -75,6 +77,163 @@ String StorageManager::normalizePath(const char* path) {
     String p(path);
     if (!p.startsWith("/")) p = "/" + p;
     return p;
+}
+
+void StorageManager::normalizePathTo(const char* path, char* out, size_t outLen) {
+    if (!out || outLen < 2) return;
+    if (!path || !path[0]) {
+        strncpy(out, "/", outLen - 1);
+        out[outLen - 1] = '\0';
+        return;
+    }
+    if (path[0] == '/') {
+        strncpy(out, path, outLen - 1);
+    } else {
+        snprintf(out, outLen, "/%s", path);
+    }
+    out[outLen - 1] = '\0';
+}
+
+int StorageManager::_loadDirectoryCache(const char* dirPath) {
+    // Must already hold mutex
+    
+    char dir[256];
+    normalizePathTo(dirPath, dir, sizeof(dir));
+    
+    // If already cached for this path and cache is fresh (< 10 min), reuse it
+    if (_dirCache.count > 0 && 
+        strncmp(_dirCache.path, dir, sizeof(_dirCache.path) - 1) == 0 &&
+        (millis() - _dirCache.timestamp) < 600000) {  // 10 min TTL
+        return _dirCache.count;
+    }
+    
+    // New cache load: clear old and start fresh
+    _dirCache.count = 0;
+    strncpy(_dirCache.path, dir, sizeof(_dirCache.path) - 1);
+    _dirCache.path[sizeof(_dirCache.path) - 1] = '\0';
+    _dirCache.timestamp = millis();
+    
+    File root = SD.open(dir);
+    if (!root || !root.isDirectory()) {
+        if (root) {
+            root.close();
+        }
+        _dirCache.count = 0;
+        return 0;
+    }
+    
+    // Single-pass scan: filter only directories and .mp3 files
+    File file = root.openNextFile();
+    while (file && _dirCache.count < MAX_CACHE_ENTRIES) {
+        bool isDir = file.isDirectory();
+        bool isMp3 = false;
+        
+        if (!isDir) {
+            const char* name = file.name();
+            if (name) {
+                size_t len = strlen(name);
+                if (len > 4) {
+                    const char* ext = name + len - 4;
+                    isMp3 = (strcasecmp(ext, ".mp3") == 0);
+                }
+            }
+        }
+        
+        if (isDir || isMp3) {
+            DirEntry& entry = _dirCache.entries[_dirCache.count];
+            const char* full = file.name();
+            const char* base = full;
+            
+            // Extract basename from full path
+            if (full) {
+                const char* slash = strrchr(full, '/');
+                if (slash && slash[1]) {
+                    base = slash + 1;
+                }
+            } else {
+                base = "";
+            }
+            
+            strncpy(entry.name, base, sizeof(entry.name) - 1);
+            entry.name[sizeof(entry.name) - 1] = '\0';
+            entry.size = (uint32_t)file.size();
+            entry.isFolder = isDir;
+            _dirCache.count++;
+        }
+        
+        file.close();
+        file = root.openNextFile();
+    }
+    
+    root.close();
+    logf(LOG_INFO, "STORAGE", "Cached dir %s: %d entries", dir, _dirCache.count);
+    return _dirCache.count;
+}
+
+void StorageManager::_clearCache() {
+    _dirCache.count = 0;
+    _dirCache.path[0] = '\0';
+    _dirCache.timestamp = 0;
+}
+
+int StorageManager::listDirectoryPage(const char* dirPath, DirEntry* out, int maxEntries,
+                                      int skip, int* totalOut) {
+    if (!out || maxEntries <= 0 || !_ready) {
+        return 0;
+    }
+    if (_playbackLocked) {
+        return -1;
+    }
+    if (!takeLock(_cfg.mutexTimeout)) {
+        return -1;
+    }
+
+    // Initialize output
+    for (int i = 0; i < maxEntries; i++) {
+        out[i].isFolder = false;
+    }
+
+    // Load (or reuse cached) directory contents
+    int totalCount = _loadDirectoryCache(dirPath);
+    if (totalCount <= 0) {
+        giveLock();
+        if (totalOut) {
+            *totalOut = 0;
+        }
+        return 0;
+    }
+
+    // Serve pagination from cache
+    int filled = 0;
+    for (int i = skip; i < totalCount && filled < maxEntries; i++) {
+        out[filled] = _dirCache.entries[i];
+        filled++;
+    }
+
+    giveLock();
+
+    if (totalOut) {
+        *totalOut = totalCount;
+    }
+    return filled;
+}
+
+int StorageManager::listNextFile(const char* dirPath, int& cursor, DirEntry& out,
+                                 int* totalOut) {
+    if (_playbackLocked) {
+        return -2;
+    }
+    DirEntry tmp[1];
+    const int n = listDirectoryPage(dirPath, tmp, 1, cursor, totalOut);
+    if (n < 0) {
+        return -1;
+    }
+    if (n == 0) {
+        return 0;
+    }
+    out = tmp[0];
+    cursor++;
+    return 1;
 }
 
 bool StorageManager::fileExists(const char* path) {
@@ -153,22 +312,24 @@ void StorageManager::uploadEnd(bool success) {
     (void)success;
 }
 
-bool StorageManager::listRootFilesJson(String& jsonOut) {
+bool StorageManager::listDirectoryJson(const char* dirPath, String& jsonOut) {
     jsonOut = "{\"files\":[";
-    if (!_ready) {
+    if (!_ready || !dirPath) {
         jsonOut += "]}";
-        return true;
+        return !_ready;
     }
     if (!takeLock(_cfg.mutexTimeout)) {
         jsonOut += "]}";
         return false;
     }
 
-    File root = SD.open("/");
-    if (!root) {
+    String dir = normalizePath(dirPath);
+    File root = SD.open(dir.c_str());
+    if (!root || !root.isDirectory()) {
+        if (root) root.close();
         giveLock();
         jsonOut += "]}";
-        return false;
+        return true;
     }
 
     bool first = true;
@@ -176,7 +337,10 @@ bool StorageManager::listRootFilesJson(String& jsonOut) {
     while (file) {
         if (!file.isDirectory()) {
             if (!first) jsonOut += ",";
-            jsonOut += "{\"name\":\"" + String(file.name()) + "\",\"size\":" + String(file.size()) + "}";
+            String name = String(file.name());
+            int slash = name.lastIndexOf('/');
+            if (slash >= 0) name = name.substring(slash + 1);
+            jsonOut += "{\"name\":\"" + name + "\",\"size\":" + String(file.size()) + "}";
             first = false;
         }
         file.close();
@@ -186,6 +350,10 @@ bool StorageManager::listRootFilesJson(String& jsonOut) {
     giveLock();
     jsonOut += "]}";
     return true;
+}
+
+bool StorageManager::listRootFilesJson(String& jsonOut) {
+    return listDirectoryJson("/", jsonOut);
 }
 
 int StorageManager::listRootFilesDebug(void (*logLine)(const char* line)) {

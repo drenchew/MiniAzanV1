@@ -6,7 +6,7 @@
 
 /**
  * Thread-safe command/event bus between LVGL task and AppCoordinator.
- * No SD, audio, or WiFi calls here.
+ * No SD, audio, or network calls here.
  */
 class UiBridge {
 public:
