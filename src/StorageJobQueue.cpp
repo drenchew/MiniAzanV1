@@ -128,6 +128,7 @@ bool StorageJobQueue::tickList() {
         strncpy(res.folder, _active.path, sizeof(res.folder) - 1);
         strncpy(res.entry.name, ent.name, sizeof(res.entry.name) - 1);
         res.entry.size = ent.size;
+        res.entry.isFolder = ent.isFolder;
         pushResult(res);
 
         if (_batchCount < 16) {

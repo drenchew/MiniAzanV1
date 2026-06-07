@@ -38,6 +38,44 @@ void UiScreens::lvCbBtn(lv_event_t* e) {
         g_active->show(UiScreenId::Bluetooth);
         return;
     }
+    if (op == 4) {
+        // Pause/Resume button
+        UiCommand c{};
+        if (g_active->_isAudioPlaying) {
+            c.cmd = UiCmd::PauseAudio;
+        } else {
+            c.cmd = UiCmd::ResumeAudio;
+        }
+        bridgePost(b, c);
+        return;
+    }
+    if (op == 5) {
+        // Up/Parent directory button
+        if (g_active->_screen == UiScreenId::QuranPlayer) {
+            // Go to parent directory
+            char parent[64] = "/";
+            const char* path = g_active->_currentBrowsePath;
+            if (path && path[0] == '/' && path[1]) {
+                // Find last slash
+                const char* lastSlash = strrchr(path, '/');
+                if (lastSlash && lastSlash != path) {
+                    size_t len = lastSlash - path;
+                    strncpy(parent, path, len);
+                    parent[len] = '\0';
+                } else if (lastSlash == path) {
+                    parent[0] = '/';
+                    parent[1] = '\0';
+                }
+            }
+            strncpy(g_active->_currentBrowsePath, parent, sizeof(g_active->_currentBrowsePath) - 1);
+            
+            UiCommand c{};
+            c.cmd = UiCmd::ListFolder;
+            strncpy(c.list.path, parent, sizeof(c.list.path) - 1);
+            bridgePost(b, c);
+        }
+        return;
+    }
     if (op == 10) {
         UiCommand c{};
         c.cmd = UiCmd::ListFolder;
@@ -49,12 +87,14 @@ void UiScreens::lvCbBtn(lv_event_t* e) {
     if (op == 11) {
         UiCommand c{};
         c.cmd = UiCmd::ListFolder;
-        strncpy(c.list.path, "/quran", sizeof(c.list.path) - 1);
-        strncpy(g_active->_listFolder, "/quran", sizeof(g_active->_listFolder) - 1);
+        strncpy(c.list.path, "/QuranRecitations/Luhaidan", sizeof(c.list.path) - 1);
+        strncpy(g_active->_listFolder, "/QuranRecitations/Luhaidan", sizeof(g_active->_listFolder) - 1);
         bridgePost(b, c);
         return;
     }
     if (op == 12) {
+        // Navigate to QuranPlayer and start at root
+        strncpy(g_active->_currentBrowsePath, "/", sizeof(g_active->_currentBrowsePath) - 1);
         g_active->show(UiScreenId::QuranPlayer);
         return;
     }
@@ -108,6 +148,7 @@ void UiScreens::rebuildShell(UiScreenId id) {
     lv_obj_clean(_contentArea);
     _lblClock = _lblDate = _lblPrayerNow = _lblNextPrayer = nullptr;
     _barProgress = _sliderVol = _swPreFajr = _listFiles = _swTransfer = _lblSystem = _barBtProgress = _scroll = nullptr;
+    _lblNowPlaying = _btnPauseResume = _lblCurrentPath = _btnUpFolder = nullptr;
     _filePathCount = 0;
     for (int i = 0; i < 5; i++) {
         _prayerCards[i] = nullptr;
@@ -151,7 +192,7 @@ void UiScreens::requestDataForScreen(UiScreenId id) {
             break;
         case UiScreenId::QuranPlayer:
             c.cmd = UiCmd::ListFolder;
-            strncpy(c.list.path, "/quran", sizeof(c.list.path) - 1);
+            strncpy(c.list.path, _currentBrowsePath, sizeof(c.list.path) - 1);
             sendCmd(c);
             break;
         case UiScreenId::Bluetooth:
@@ -309,7 +350,7 @@ void UiScreens::buildFileManager(lv_obj_t* area) {
     lv_obj_add_event_cb(ba, lvCbBtn, LV_EVENT_CLICKED, (void*)btnTag(10));
 
     lv_obj_t* bq = lv_btn_create(tabs);
-    lv_label_set_text(lv_label_create(bq), "/quran");
+    lv_label_set_text(lv_label_create(bq), "/QuranRecitations/Luhaidan");
     lv_obj_center(lv_obj_get_child(bq, 0));
     lv_obj_add_event_cb(bq, lvCbBtn, LV_EVENT_CLICKED, (void*)btnTag(11));
 
@@ -324,14 +365,28 @@ void UiScreens::buildFileManager(lv_obj_t* area) {
 }
 
 void UiScreens::buildQuranPlayer(lv_obj_t* area) {
-    lv_obj_t* title = lv_label_create(area);
-    lv_label_set_text(title, "Quran Player");
-    lv_obj_set_style_text_color(title, UiTheme::kText(), 0);
+    // Current path display
+    _lblCurrentPath = lv_label_create(area);
+    lv_label_set_text(_lblCurrentPath, "Path: /");
+    lv_obj_set_style_text_font(_lblCurrentPath, &lv_font_montserrat_14, 0);
+    lv_obj_set_width(_lblCurrentPath, 220);
+    lv_obj_align(_lblCurrentPath, LV_ALIGN_TOP_MID, 0, 0);
 
+    // Now Playing display
+    _lblNowPlaying = lv_label_create(area);
+    lv_label_set_text(_lblNowPlaying, "No file playing");
+    lv_label_set_long_mode(_lblNowPlaying, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(_lblNowPlaying, 220);
+    lv_obj_set_style_text_font(_lblNowPlaying, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(_lblNowPlaying, UiTheme::kAccent(), 0);
+    lv_obj_align(_lblNowPlaying, LV_ALIGN_TOP_MID, 0, 20);
+
+    // File list
     _listFiles = lv_list_create(area);
-    lv_obj_set_size(_listFiles, lv_pct(100), lv_obj_get_height(area) - 70);
-    lv_obj_align(_listFiles, LV_ALIGN_BOTTOM_MID, 0, -44);
+    lv_obj_set_size(_listFiles, lv_pct(100), lv_obj_get_height(area) - 110);
+    lv_obj_align(_listFiles, LV_ALIGN_TOP_MID, 0, 40);
 
+    // Navigation and playback controls at bottom
     lv_obj_t* row = lv_obj_create(area);
     lv_obj_set_size(row, lv_pct(100), 40);
     lv_obj_align(row, LV_ALIGN_BOTTOM_MID, 0, 0);
@@ -340,6 +395,20 @@ void UiScreens::buildQuranPlayer(lv_obj_t* area) {
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
+    // Up/Parent directory button
+    _btnUpFolder = lv_btn_create(row);
+    lv_label_set_text(lv_label_create(_btnUpFolder), LV_SYMBOL_UP);
+    lv_obj_center(lv_obj_get_child(_btnUpFolder, 0));
+    lv_obj_add_event_cb(_btnUpFolder, lvCbBtn, LV_EVENT_CLICKED, (void*)btnTag(5));
+
+    // Pause/Resume button
+    _btnPauseResume = lv_btn_create(row);
+    lv_label_set_text(lv_label_create(_btnPauseResume), LV_SYMBOL_PAUSE);
+    lv_obj_center(lv_obj_get_child(_btnPauseResume, 0));
+    lv_obj_add_event_cb(_btnPauseResume, lvCbBtn, LV_EVENT_CLICKED, (void*)btnTag(4));
+    lv_obj_add_state(_btnPauseResume, LV_STATE_DISABLED);
+
+    // Stop button
     lv_obj_t* stop = lv_btn_create(row);
     lv_obj_add_event_cb(stop, lvCbBtn, LV_EVENT_CLICKED, (void*)btnTag(2));
     lv_label_set_text(lv_label_create(stop), LV_SYMBOL_STOP);
@@ -415,6 +484,16 @@ void UiScreens::populateFileList(const UiEventPayload& ev) {
     _filePathCount = ev.fileCount > 16 ? 16 : ev.fileCount;
 
     const char* folder = ev.listFolder[0] ? ev.listFolder : _listFolder;
+    
+    // Update current browse path if in QuranPlayer
+    if (_screen == UiScreenId::QuranPlayer) {
+        strncpy(_currentBrowsePath, folder, sizeof(_currentBrowsePath) - 1);
+        if (_lblCurrentPath) {
+            char pathBuf[64];
+            snprintf(pathBuf, sizeof(pathBuf), "Path: %s", folder);
+            lv_label_set_text(_lblCurrentPath, pathBuf);
+        }
+    }
 
     for (uint8_t i = 0; i < _filePathCount; i++) {
         if (folder[0] == '/' && folder[1]) {
@@ -422,12 +501,32 @@ void UiScreens::populateFileList(const UiEventPayload& ev) {
         } else {
             snprintf(_filePaths[i], sizeof(_filePaths[i]), "/%s", ev.files[i].name);
         }
+        
+        _isFolder[i] = ev.files[i].isFolder;
 
-        lv_obj_t* btn = lv_list_add_btn(_listFiles, LV_SYMBOL_AUDIO, ev.files[i].name);
+        // Use folder indicator for directories, audio icon for files
+        const char* icon = ev.files[i].isFolder ? "[D]" : LV_SYMBOL_AUDIO;
+        lv_obj_t* btn = lv_list_add_btn(_listFiles, icon, ev.files[i].name);
+        
         lv_obj_add_event_cb(btn, [](lv_event_t* e) {
             if (lv_event_get_code(e) != LV_EVENT_CLICKED || !g_active) return;
             int idx = (int)(intptr_t)lv_event_get_user_data(e);
             if (idx < 0 || idx >= g_active->_filePathCount) return;
+            
+            // Handle folder navigation
+            if (g_active->_isFolder[idx]) {
+                if (g_active->_screen == UiScreenId::QuranPlayer) {
+                    strncpy(g_active->_currentBrowsePath, g_active->_filePaths[idx], 
+                            sizeof(g_active->_currentBrowsePath) - 1);
+                    UiCommand c{};
+                    c.cmd = UiCmd::ListFolder;
+                    strncpy(c.list.path, g_active->_filePaths[idx], sizeof(c.list.path) - 1);
+                    g_active->sendCmd(c);
+                }
+                return;
+            }
+            
+            // Handle file selection
             UiCommand c{};
             if (g_active->_screen == UiScreenId::AzanSettings) {
                 c.cmd = UiCmd::SelectAzanFile;
@@ -435,6 +534,17 @@ void UiScreens::populateFileList(const UiEventPayload& ev) {
             } else {
                 c.cmd = UiCmd::PlayFile;
                 strncpy(c.play.path, g_active->_filePaths[idx], sizeof(c.play.path) - 1);
+                // Store filename for display
+                strncpy(g_active->_currentPlayingPath, g_active->_filePaths[idx], 
+                        sizeof(g_active->_currentPlayingPath) - 1);
+                if (g_active->_lblNowPlaying) {
+                    char buf[80];
+                    const char* displayName = g_active->_filePaths[idx];
+                    const char* lastSlash = strrchr(displayName, '/');
+                    if (lastSlash) displayName = lastSlash + 1;
+                    snprintf(buf, sizeof(buf), "Playing: %s", displayName);
+                    lv_label_set_text(g_active->_lblNowPlaying, buf);
+                }
             }
             g_active->sendCmd(c);
         }, LV_EVENT_CLICKED, (void*)(intptr_t)i);
@@ -592,6 +702,18 @@ void UiScreens::onEvent(const UiEventPayload& ev) {
             break;
 
         case UiEvent::AudioState:
+            _isAudioPlaying = ev.audioPlaying;
+            if (_screen == UiScreenId::QuranPlayer) {
+                if (_btnPauseResume) {
+                    if (_isAudioPlaying) {
+                        lv_obj_clear_state(_btnPauseResume, LV_STATE_DISABLED);
+                        lv_label_set_text(lv_obj_get_child(_btnPauseResume, 0), LV_SYMBOL_PAUSE);
+                    } else {
+                        lv_obj_add_state(_btnPauseResume, LV_STATE_DISABLED);
+                        lv_label_set_text(lv_obj_get_child(_btnPauseResume, 0), LV_SYMBOL_PLAY);
+                    }
+                }
+            }
             break;
 
         case UiEvent::FileOpResult:

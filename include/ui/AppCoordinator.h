@@ -83,6 +83,8 @@ private:
     void handleDeleteFile(const char* path);
     void handleSelectAzanFile(const char* path);
     void handlePlayFile(const char* path);
+    void handlePauseAudio();
+    void handleResumeAudio();
     bool storageBlocked() const;
     static const char* prayerName(int idx);
 

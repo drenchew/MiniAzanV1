@@ -49,6 +49,7 @@ public:
     struct DirEntry {
         char name[48];
         uint32_t size = 0;
+        bool isFolder = false;
     };
 
     /**

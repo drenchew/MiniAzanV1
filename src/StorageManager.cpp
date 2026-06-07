@@ -125,7 +125,21 @@ int StorageManager::listDirectoryPage(const char* dirPath, DirEntry* out, int ma
     int filled = 0;
     File file = root.openNextFile();
     while (file) {
-        if (!file.isDirectory()) {
+        // Include directories (for navigation) and MP3 files only
+        bool isDir = file.isDirectory();
+        bool isMp3 = false;
+        if (!isDir) {
+            const char* name = file.name();
+            if (name) {
+                size_t len = strlen(name);
+                if (len > 4) {
+                    const char* ext = name + len - 4;
+                    isMp3 = (strcasecmp(ext, ".mp3") == 0);
+                }
+            }
+        }
+        
+        if (isDir || isMp3) {
             if (index >= skip && filled < maxEntries) {
                 const char* full = file.name();
                 const char* base = full;
@@ -140,6 +154,7 @@ int StorageManager::listDirectoryPage(const char* dirPath, DirEntry* out, int ma
                 strncpy(out[filled].name, base, sizeof(out[filled].name) - 1);
                 out[filled].name[sizeof(out[filled].name) - 1] = '\0';
                 out[filled].size = (uint32_t)file.size();
+                out[filled].isFolder = isDir;
                 filled++;
             }
             index++;

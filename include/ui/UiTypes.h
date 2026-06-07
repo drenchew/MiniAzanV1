@@ -112,7 +112,8 @@ struct UiCmdSetBluetoothStreamVolume {
 
 struct UiFileEntry {
     char name[48];
-    uint32_t size;
+    uint32_t size = 0;
+    bool isFolder = false;
 };
 
 struct UiEventPayload {

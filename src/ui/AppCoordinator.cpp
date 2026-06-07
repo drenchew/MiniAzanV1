@@ -107,9 +107,8 @@ void AppCoordinator::dispatchCommand(const UiCommand& cmd) {
         case UiCmd::DeleteFile: handleDeleteFile(cmd.del.path); break;
         case UiCmd::SelectAzanFile: handleSelectAzanFile(cmd.azanPath.path); break;
         case UiCmd::PlayFile: handlePlayFile(cmd.play.path); break;
-        case UiCmd::PauseAudio:
-        case UiCmd::ResumeAudio:
-            break;
+        case UiCmd::PauseAudio: handlePauseAudio(); break;
+        case UiCmd::ResumeAudio: handleResumeAudio(); break;
         default: break;
     }
 }
@@ -339,6 +338,36 @@ void AppCoordinator::handlePlayFile(const char* path) {
     UiEventPayload ev{};
     ev.type = UiEvent::AudioState;
     ev.audioPlaying = _svc.isAudioPlaying && *_svc.isAudioPlaying;
+    emit(ev);
+}
+
+void AppCoordinator::handlePauseAudio() {
+    // Since ESP32-audioI2S doesn't support native pause,
+    // we just stop for now. Could be enhanced with position tracking.
+    if (_svc.audio) {
+        _svc.audio->requestStop();
+        if (_svc.isAudioPlaying) {
+            *_svc.isAudioPlaying = false;
+        }
+    }
+    UiEventPayload ev{};
+    ev.type = UiEvent::AudioState;
+    ev.audioPlaying = false;
+    emit(ev);
+}
+
+void AppCoordinator::handleResumeAudio() {
+    // Resume is equivalent to pausing for now, or could replay the last file.
+    // This is a placeholder for future enhancement with position tracking.
+    if (_svc.audio) {
+        _svc.audio->requestStop();
+        if (_svc.isAudioPlaying) {
+            *_svc.isAudioPlaying = false;
+        }
+    }
+    UiEventPayload ev{};
+    ev.type = UiEvent::AudioState;
+    ev.audioPlaying = false;
     emit(ev);
 }
 

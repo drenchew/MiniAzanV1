@@ -50,16 +50,24 @@ private:
     lv_obj_t* _barBtProgress = nullptr;
     lv_obj_t* _lblSystem = nullptr;
     lv_obj_t* _scroll = nullptr;
+    lv_obj_t* _lblNowPlaying = nullptr;
+    lv_obj_t* _btnPauseResume = nullptr;
+    lv_obj_t* _lblCurrentPath = nullptr;
+    lv_obj_t* _btnUpFolder = nullptr;
 
     UiScreenId _screen = UiScreenId::Home;
     char _listFolder[64] = "/azan";
     char _pendingDelete[64]{};
+    char _currentPlayingPath[72]{};
+    char _currentBrowsePath[64] = "/";
+    bool _isAudioPlaying = false;
     UiEventPayload _lastPrayer{};
     UiEventPayload _lastClock{};
     uint32_t _lastRefreshMs = 0;
 
     char _filePaths[16][72]{};
     uint8_t _filePathCount = 0;
+    bool _isFolder[16]{};
     UiFileEntry _streamFiles[16]{};
     uint8_t _streamCount = 0;
     lv_obj_t* _prayerTimeLabels[5]{};
