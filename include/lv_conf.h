@@ -21,7 +21,10 @@
 
 #define LV_FONT_MONTSERRAT_14 1
 #define LV_FONT_MONTSERRAT_20 1
+#define LV_FONT_MONTSERRAT_28 1
 #define LV_FONT_DEFAULT        &lv_font_montserrat_14
+
+#define LV_DRAW_COMPLEX 1
 
 #define LV_USE_LABEL    1
 #define LV_USE_BTN      1
@@ -31,7 +34,7 @@
 #define LV_USE_SWITCH   1
 #define LV_USE_BAR      1
 #define LV_USE_FLEX     1
-#define LV_USE_ARC      0
+#define LV_USE_ARC      1
 #define LV_USE_CHART    0
 #define LV_USE_TABLE    0
 #define LV_USE_TABVIEW  0

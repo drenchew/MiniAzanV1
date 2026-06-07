@@ -55,6 +55,7 @@ enum class UiScreenId : uint8_t {
     FileManager,
     QuranPlayer,
     Bluetooth,
+    Menu,           // full-screen navigation hub (gear icon → Menu)
     /** @deprecated aliases for migration */
     System = Bluetooth,
     Wifi = Bluetooth,
