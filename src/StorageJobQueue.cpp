@@ -35,6 +35,13 @@ bool StorageJobQueue::submit(const Job& job) {
     if (copy.requestId == 0) {
         copy.requestId = _nextId++;
     }
+    if (copy.requestId < _minValidRequestId) {
+        logf(1, "submit DROPPED stale id=%lu min=%lu path=%s",
+             (unsigned long)copy.requestId,
+             (unsigned long)_minValidRequestId,
+             copy.path);
+        return false;
+    }
 
     const bool ok = xQueueSend(_jobQ, &copy, 0) == pdTRUE;
     if (ok) {
@@ -44,6 +51,30 @@ bool StorageJobQueue::submit(const Job& job) {
         logf(1, "submit REJECTED queue full type=%u", (unsigned)job.type);
     }
     return ok;
+}
+
+void StorageJobQueue::invalidateBefore(uint32_t requestId) {
+    if (requestId == 0 || requestId <= _minValidRequestId) {
+        return;
+    }
+    _minValidRequestId = requestId;
+
+    Job keep[4]{};
+    uint8_t keepCount = 0;
+    Job pending{};
+    while (_jobQ && xQueueReceive(_jobQ, &pending, 0) == pdTRUE) {
+        if (pending.requestId >= _minValidRequestId && keepCount < 4) {
+            keep[keepCount++] = pending;
+        } else {
+            logf(2, "drop queued stale id=%lu min=%lu path=%s",
+                 (unsigned long)pending.requestId,
+                 (unsigned long)_minValidRequestId,
+                 pending.path);
+        }
+    }
+    for (uint8_t i = 0; i < keepCount; i++) {
+        xQueueSend(_jobQ, &keep[i], 0);
+    }
 }
 
 void StorageJobQueue::logMsg(int level, const char* msg) const {
@@ -64,6 +95,12 @@ void StorageJobQueue::logf(int level, const char* fmt, ...) const {
 
 void StorageJobQueue::pushResult(const JobResult& res) {
     if (!_resultQ) return;
+    if (res.requestId < _minValidRequestId) {
+        logf(2, "drop stale result id=%lu min=%lu",
+             (unsigned long)res.requestId,
+             (unsigned long)_minValidRequestId);
+        return;
+    }
     if (xQueueSend(_resultQ, &res, 0) != pdTRUE) {
         logf(1, "result queue full id=%lu", (unsigned long)res.requestId);
     }
@@ -161,6 +198,10 @@ void StorageJobQueue::finishList(bool ok) {
     for (uint8_t i = 0; i < _batchCount; i++) {
         res.files[i] = _batch[i];
     }
+    
+    logf(2, "list finish id=%lu ok=%d batchCount=%u total=%d", 
+         (unsigned long)_active.requestId, ok ? 1 : 0, (unsigned)_batchCount, _listTotal);
+    
     pushResult(res);
 
     logf(2, "list done id=%lu ok=%d files=%u total=%d",
@@ -208,9 +249,25 @@ bool StorageJobQueue::tickDelete() {
 }
 
 bool StorageJobQueue::tick() {
+    if (_phase != StreamPhase::Idle && _active.requestId < _minValidRequestId) {
+        logf(2, "cancel active stale id=%lu min=%lu path=%s",
+             (unsigned long)_active.requestId,
+             (unsigned long)_minValidRequestId,
+             _active.path);
+        _phase = StreamPhase::Idle;
+        _batchCount = 0;
+    }
+
     if (_phase == StreamPhase::Idle) {
         Job job{};
         if (_jobQ && xQueueReceive(_jobQ, &job, 0) == pdTRUE) {
+            if (job.requestId < _minValidRequestId) {
+                logf(2, "skip stale job id=%lu min=%lu path=%s",
+                     (unsigned long)job.requestId,
+                     (unsigned long)_minValidRequestId,
+                     job.path);
+                return true;
+            }
             startJob(job);
         } else {
             return false;
@@ -228,6 +285,12 @@ void StorageJobQueue::poll() {
 
     JobResult res{};
     while (xQueueReceive(_resultQ, &res, 0) == pdTRUE) {
+        if (res.requestId < _minValidRequestId) {
+            logf(2, "poll drop stale result id=%lu min=%lu",
+                 (unsigned long)res.requestId,
+                 (unsigned long)_minValidRequestId);
+            continue;
+        }
         UiEventPayload ev{};
 
         if (res.type == JobType::ListDir) {
@@ -242,6 +305,20 @@ void StorageJobQueue::poll() {
                 ev.files[0] = res.entry;
                 strncpy(ev.listFolder, res.folder, sizeof(ev.listFolder) - 1);
             } else if (res.phase == StreamPhase::ListEnd) {
+                // #region agent log
+                logf(2,
+                     "{\"sessionId\":\"36936e\",\"runId\":\"initial\",\"hypothesisId\":\"H2,H3\","
+                     "\"location\":\"StorageJobQueue.cpp:248\",\"message\":\"list end result before ui emit\","
+                     "\"data\":{\"requestId\":%lu,\"ok\":%d,\"fileCount\":%u,\"total\":%u,"
+                     "\"folder\":\"%s\",\"first\":\"%s\",\"firstFolder\":%d}}",
+                     (unsigned long)res.requestId,
+                     res.ok ? 1 : 0,
+                     (unsigned)res.fileCount,
+                     (unsigned)res.listTotal,
+                     res.folder,
+                     res.fileCount ? res.files[0].name : "",
+                     res.fileCount ? (res.files[0].isFolder ? 1 : 0) : -1);
+                // #endregion
                 UiEventPayload endEv{};
                 endEv.type = UiEvent::FileListStreamEnd;
                 endEv.result = res.ok ? UiResult::Ok : UiResult::Failed;
@@ -260,6 +337,9 @@ void StorageJobQueue::poll() {
                 for (uint8_t i = 0; i < res.fileCount && i < 16; i++) {
                     ev.files[i] = res.files[i];
                 }
+                
+                logf(2, "Emitting FileListReady: fileCount=%d total=%d folder=%s", 
+                     res.fileCount, res.listTotal, res.folder);
             }
         } else if (res.type == JobType::DeleteFile) {
             ev.type = UiEvent::FileOpResult;

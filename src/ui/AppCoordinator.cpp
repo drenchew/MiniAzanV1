@@ -102,8 +102,8 @@ void AppCoordinator::dispatchCommand(const UiCommand& cmd) {
         case UiCmd::RequestClock: handleRequestClock(); break;
         case UiCmd::RequestPrayerTimes: handleRequestPrayer(); break;
         case UiCmd::ListAudioFiles: handleListAudioFiles(); break;
-        case UiCmd::ListFolder: handleListFolder(cmd.list.path, cmd.list.page); break;
-        case UiCmd::RefreshFileList: handleListFolder("/azan", 0); break;
+        case UiCmd::ListFolder: handleListFolder(cmd.list.path, cmd.list.page, cmd.list.requestId); break;
+        case UiCmd::RefreshFileList: handleListFolder("/azan", 0, 0); break;
         case UiCmd::DeleteFile: handleDeleteFile(cmd.del.path); break;
         case UiCmd::SelectAzanFile: handleSelectAzanFile(cmd.azanPath.path); break;
         case UiCmd::PlayFile: handlePlayFile(cmd.play.path); break;
@@ -371,7 +371,7 @@ void AppCoordinator::handleResumeAudio() {
     emit(ev);
 }
 
-void AppCoordinator::handleListFolder(const char* path, uint8_t page) {
+void AppCoordinator::handleListFolder(const char* path, uint8_t page, uint32_t requestId) {
     if (!_svc.storageJobs) {
         UiEventPayload ev{};
         ev.type = UiEvent::StorageBusy;
@@ -389,6 +389,10 @@ void AppCoordinator::handleListFolder(const char* path, uint8_t page) {
     strncpy(job.path, path && path[0] ? path : "/", sizeof(job.path) - 1);
     job.page = page;
     job.pageSize = 16;
+    job.requestId = requestId ? requestId : _nextInternalListRequestId++;
+    if (_svc.storageJobs) {
+        _svc.storageJobs->invalidateBefore(job.requestId);
+    }
     if (!_svc.storageJobs->submit(job)) {
         UiEventPayload ev{};
         ev.type = UiEvent::StorageBusy;
@@ -421,7 +425,7 @@ void AppCoordinator::handleDeleteFile(const char* path) {
 }
 
 void AppCoordinator::handleListAudioFiles() {
-    handleListFolder("/azan", 0);
+    handleListFolder("/azan", 0, 0);
 }
 
 void AppCoordinator::handleRequestBluetoothStatus() {

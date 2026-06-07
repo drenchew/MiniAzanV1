@@ -79,7 +79,7 @@ private:
     void handleRequestClock();
     void handleRequestPrayer();
     void handleListAudioFiles();
-    void handleListFolder(const char* path, uint8_t page);
+    void handleListFolder(const char* path, uint8_t page, uint32_t requestId);
     void handleDeleteFile(const char* path);
     void handleSelectAzanFile(const char* path);
     void handlePlayFile(const char* path);
@@ -92,4 +92,5 @@ private:
     AppServices _svc{};
     UiCommand _deferred[kMaxDeferredCmds]{};
     uint8_t _deferredCount = 0;
+    uint32_t _nextInternalListRequestId = 1;
 };

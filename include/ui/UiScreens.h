@@ -28,6 +28,8 @@ private:
     void buildSystem(lv_obj_t* area);
     void requestDataForScreen(UiScreenId id);
     void sendCmd(UiCommand cmd, bool urgent = false);
+    void requestFolderList(const char* path);
+    bool isCurrentListResult(const UiEventPayload& ev) const;
     void populateFileList(const UiEventPayload& ev);
     void formatCountdown(char* buf, size_t len, int seconds);
 
@@ -60,6 +62,9 @@ private:
     char _pendingDelete[64]{};
     char _currentPlayingPath[72]{};
     char _currentBrowsePath[64] = "/";
+    char _activeListFolder[64] = "/";
+    uint32_t _listRequestSeq = 0;
+    uint32_t _activeListRequestId = 0;
     bool _isAudioPlaying = false;
     UiEventPayload _lastPrayer{};
     UiEventPayload _lastClock{};

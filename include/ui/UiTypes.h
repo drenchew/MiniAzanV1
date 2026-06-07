@@ -92,6 +92,7 @@ struct UiCmdSetAzanIndex {
 struct UiCmdListFolder {
     char path[64];
     uint8_t page;
+    uint32_t requestId;
 };
 
 struct UiCmdDeleteFile {

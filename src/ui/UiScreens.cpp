@@ -2,6 +2,7 @@
 #include "ui/UiTheme.h"
 #include "UIManager.h"
 #include "system/AzanSafeMode.h"
+#include "AppLog.h"
 
 #if defined(MINI_AZAN_UI_ENABLE) && MINI_AZAN_UI_ENABLE
 
@@ -67,29 +68,16 @@ void UiScreens::lvCbBtn(lv_event_t* e) {
                     parent[1] = '\0';
                 }
             }
-            strncpy(g_active->_currentBrowsePath, parent, sizeof(g_active->_currentBrowsePath) - 1);
-            
-            UiCommand c{};
-            c.cmd = UiCmd::ListFolder;
-            strncpy(c.list.path, parent, sizeof(c.list.path) - 1);
-            bridgePost(b, c);
+            g_active->requestFolderList(parent);
         }
         return;
     }
     if (op == 10) {
-        UiCommand c{};
-        c.cmd = UiCmd::ListFolder;
-        strncpy(c.list.path, "/azan", sizeof(c.list.path) - 1);
-        strncpy(g_active->_listFolder, "/azan", sizeof(g_active->_listFolder) - 1);
-        bridgePost(b, c);
+        g_active->requestFolderList("/azan");
         return;
     }
     if (op == 11) {
-        UiCommand c{};
-        c.cmd = UiCmd::ListFolder;
-        strncpy(c.list.path, "/QuranRecitations/Luhaidan", sizeof(c.list.path) - 1);
-        strncpy(g_active->_listFolder, "/QuranRecitations/Luhaidan", sizeof(g_active->_listFolder) - 1);
-        bridgePost(b, c);
+        g_active->requestFolderList("/QuranRecitations/Luhaidan");
         return;
     }
     if (op == 12) {
@@ -136,6 +124,55 @@ void UiScreens::sendCmd(UiCommand cmd, bool urgent) {
     bridgePost(_bridge, cmd, urgent);
 }
 
+void UiScreens::requestFolderList(const char* path) {
+    const char* folder = (path && path[0]) ? path : "/";
+    _listRequestSeq++;
+    if (_listRequestSeq == 0) {
+        _listRequestSeq = 1;
+    }
+    _activeListRequestId = _listRequestSeq;
+    strncpy(_activeListFolder, folder, sizeof(_activeListFolder) - 1);
+    _activeListFolder[sizeof(_activeListFolder) - 1] = '\0';
+
+    if (_screen == UiScreenId::QuranPlayer) {
+        strncpy(_currentBrowsePath, folder, sizeof(_currentBrowsePath) - 1);
+        _currentBrowsePath[sizeof(_currentBrowsePath) - 1] = '\0';
+        if (_lblCurrentPath) {
+            char pathBuf[64];
+            snprintf(pathBuf, sizeof(pathBuf), "Path: %s", _currentBrowsePath);
+            lv_label_set_text(_lblCurrentPath, pathBuf);
+        }
+    } else {
+        strncpy(_listFolder, folder, sizeof(_listFolder) - 1);
+        _listFolder[sizeof(_listFolder) - 1] = '\0';
+    }
+
+    _streamCount = 0;
+    _filePathCount = 0;
+    if (_listFiles) {
+        lv_obj_clean(_listFiles);
+    }
+
+    UiCommand c{};
+    c.cmd = UiCmd::ListFolder;
+    strncpy(c.list.path, folder, sizeof(c.list.path) - 1);
+    c.list.page = 0;
+    c.list.requestId = _activeListRequestId;
+    sendCmd(c);
+}
+
+bool UiScreens::isCurrentListResult(const UiEventPayload& ev) const {
+    if (ev.listRequestId == 0 || ev.listRequestId != _activeListRequestId) {
+        return false;
+    }
+    if (strncmp(ev.listFolder, _activeListFolder, sizeof(_activeListFolder)) != 0) {
+        return false;
+    }
+    return _screen == UiScreenId::QuranPlayer
+        || _screen == UiScreenId::FileManager
+        || _screen == UiScreenId::AzanSettings;
+}
+
 void UiScreens::show(UiScreenId id) {
     _screen = id;
     if (_nav) _nav->replace(id);
@@ -180,20 +217,15 @@ void UiScreens::requestDataForScreen(UiScreenId id) {
             sendCmd(c);
             break;
         case UiScreenId::AzanSettings:
-            c.cmd = UiCmd::ListAudioFiles;
-            sendCmd(c);
+            requestFolderList("/azan");
             c.cmd = UiCmd::RequestSystemStatus;
             sendCmd(c);
             break;
         case UiScreenId::FileManager:
-            c.cmd = UiCmd::ListFolder;
-            strncpy(c.list.path, _listFolder, sizeof(c.list.path) - 1);
-            sendCmd(c);
+            requestFolderList(_listFolder);
             break;
         case UiScreenId::QuranPlayer:
-            c.cmd = UiCmd::ListFolder;
-            strncpy(c.list.path, _currentBrowsePath, sizeof(c.list.path) - 1);
-            sendCmd(c);
+            requestFolderList(_currentBrowsePath);
             break;
         case UiScreenId::Bluetooth:
             c.cmd = UiCmd::RequestBluetoothStatus;
@@ -479,7 +511,45 @@ void UiScreens::buildSystem(lv_obj_t* area) {
 }
 
 void UiScreens::populateFileList(const UiEventPayload& ev) {
-    if (!_listFiles) return;
+    if (!isCurrentListResult(ev)) {
+        appLogf(2, "UI", "drop stale FileListReady id=%lu active=%lu folder=%s active=%s",
+                (unsigned long)ev.listRequestId,
+                (unsigned long)_activeListRequestId,
+                ev.listFolder,
+                _activeListFolder);
+        return;
+    }
+    if (!_listFiles) {
+        // #region agent log
+        appLogf(2, "DBG36936e",
+                "{\"sessionId\":\"36936e\",\"runId\":\"initial\",\"hypothesisId\":\"H1,H5\","
+                "\"location\":\"UiScreens.cpp:483\",\"message\":\"populate skipped no list object\","
+                "\"data\":{\"screen\":%u,\"fileCount\":%u,\"folder\":\"%s\"}}",
+                (unsigned)_screen,
+                (unsigned)ev.fileCount,
+                ev.listFolder[0] ? ev.listFolder : _listFolder);
+        // #endregion
+        return;
+    }
+    
+    appLogf(2, "UI", "populateFileList: fileCount=%d folder=%s", 
+            ev.fileCount, ev.listFolder[0] ? ev.listFolder : _listFolder);
+    // #region agent log
+    appLogf(2, "DBG36936e",
+            "{\"sessionId\":\"36936e\",\"runId\":\"initial\",\"hypothesisId\":\"H1,H3,H5\","
+            "\"location\":\"UiScreens.cpp:488\",\"message\":\"populate entry\","
+            "\"data\":{\"screen\":%u,\"listPtr\":\"%p\",\"parentPtr\":\"%p\",\"beforeChildren\":%u,"
+            "\"fileCount\":%u,\"folder\":\"%s\",\"first\":\"%s\",\"firstFolder\":%d}}",
+            (unsigned)_screen,
+            (void*)_listFiles,
+            (void*)lv_obj_get_parent(_listFiles),
+            (unsigned)lv_obj_get_child_cnt(_listFiles),
+            (unsigned)ev.fileCount,
+            ev.listFolder[0] ? ev.listFolder : _listFolder,
+            ev.fileCount ? ev.files[0].name : "",
+            ev.fileCount ? (ev.files[0].isFolder ? 1 : 0) : -1);
+    // #endregion
+    
     lv_obj_clean(_listFiles);
     _filePathCount = ev.fileCount > 16 ? 16 : ev.fileCount;
 
@@ -507,6 +577,21 @@ void UiScreens::populateFileList(const UiEventPayload& ev) {
         // Use folder indicator for directories, audio icon for files
         const char* icon = ev.files[i].isFolder ? "[D]" : LV_SYMBOL_AUDIO;
         lv_obj_t* btn = lv_list_add_btn(_listFiles, icon, ev.files[i].name);
+        if (i == 0 || i + 1 == _filePathCount) {
+            // #region agent log
+            appLogf(2, "DBG36936e",
+                    "{\"sessionId\":\"36936e\",\"runId\":\"initial\",\"hypothesisId\":\"H3,H4\","
+                    "\"location\":\"UiScreens.cpp:515\",\"message\":\"list button added\","
+                    "\"data\":{\"idx\":%u,\"btnPtr\":\"%p\",\"childrenNow\":%u,\"name\":\"%s\","
+                    "\"path\":\"%s\",\"isFolder\":%d}}",
+                    (unsigned)i,
+                    (void*)btn,
+                    (unsigned)lv_obj_get_child_cnt(_listFiles),
+                    ev.files[i].name,
+                    _filePaths[i],
+                    ev.files[i].isFolder ? 1 : 0);
+            // #endregion
+        }
         
         lv_obj_add_event_cb(btn, [](lv_event_t* e) {
             if (lv_event_get_code(e) != LV_EVENT_CLICKED || !g_active) return;
@@ -516,12 +601,7 @@ void UiScreens::populateFileList(const UiEventPayload& ev) {
             // Handle folder navigation
             if (g_active->_isFolder[idx]) {
                 if (g_active->_screen == UiScreenId::QuranPlayer) {
-                    strncpy(g_active->_currentBrowsePath, g_active->_filePaths[idx], 
-                            sizeof(g_active->_currentBrowsePath) - 1);
-                    UiCommand c{};
-                    c.cmd = UiCmd::ListFolder;
-                    strncpy(c.list.path, g_active->_filePaths[idx], sizeof(c.list.path) - 1);
-                    g_active->sendCmd(c);
+                    g_active->requestFolderList(g_active->_filePaths[idx]);
                 }
                 return;
             }
@@ -570,11 +650,50 @@ void UiScreens::populateFileList(const UiEventPayload& ev) {
             }, LV_EVENT_LONG_PRESSED, (void*)(intptr_t)i);
         }
     }
+    
+    // Force LVGL to refresh the list widget
+    lv_obj_invalidate(_listFiles);
+    lv_refr_now(nullptr);
+    
+    appLogf(2, "UI", "populateFileList done: added %d entries", _filePathCount);
+    // #region agent log
+    appLogf(2, "DBG36936e",
+            "{\"sessionId\":\"36936e\",\"runId\":\"initial\",\"hypothesisId\":\"H1,H4\","
+            "\"location\":\"UiScreens.cpp:584\",\"message\":\"populate exit\","
+            "\"data\":{\"screen\":%u,\"listPtr\":\"%p\",\"finalChildren\":%u,\"filePathCount\":%u,"
+            "\"height\":%d,\"width\":%d}}",
+            (unsigned)_screen,
+            (void*)_listFiles,
+            (unsigned)lv_obj_get_child_cnt(_listFiles),
+            (unsigned)_filePathCount,
+            (int)lv_obj_get_height(_listFiles),
+            (int)lv_obj_get_width(_listFiles));
+    // #endregion
 }
 
 void UiScreens::onEvent(const UiEventPayload& ev) {
     char buf[80];
     UiComponents::updateStatusBar(_statusBar, ev);
+    
+    // Debug logging for list events
+    if (ev.type == UiEvent::FileListReady) {
+        appLogf(2, "UI", "FileListReady event: fileCount=%d folder=%s", 
+                ev.fileCount, ev.listFolder[0] ? ev.listFolder : "root");
+        // #region agent log
+        appLogf(2, "DBG36936e",
+                "{\"sessionId\":\"36936e\",\"runId\":\"initial\",\"hypothesisId\":\"H1,H2,H3,H5\","
+                "\"location\":\"UiScreens.cpp:594\",\"message\":\"FileListReady received\","
+                "\"data\":{\"screen\":%u,\"listPtr\":\"%p\",\"streamCount\":%u,\"fileCount\":%u,"
+                "\"folder\":\"%s\",\"first\":\"%s\",\"firstFolder\":%d}}",
+                (unsigned)_screen,
+                (void*)_listFiles,
+                (unsigned)_streamCount,
+                (unsigned)ev.fileCount,
+                ev.listFolder[0] ? ev.listFolder : "",
+                ev.fileCount ? ev.files[0].name : "",
+                ev.fileCount ? (ev.files[0].isFolder ? 1 : 0) : -1);
+        // #endregion
+    }
 
     switch (ev.type) {
         case UiEvent::ClockUpdate:
@@ -679,6 +798,14 @@ void UiScreens::onEvent(const UiEventPayload& ev) {
             break;
 
         case UiEvent::FileListStreamStart:
+            if (!isCurrentListResult(ev)) {
+                appLogf(2, "UI", "drop stale FileListStreamStart id=%lu active=%lu folder=%s active=%s",
+                        (unsigned long)ev.listRequestId,
+                        (unsigned long)_activeListRequestId,
+                        ev.listFolder,
+                        _activeListFolder);
+                break;
+            }
             _streamCount = 0;
             if (_listFiles) {
                 lv_obj_clean(_listFiles);
@@ -686,12 +813,18 @@ void UiScreens::onEvent(const UiEventPayload& ev) {
             break;
 
         case UiEvent::FileListStreamEntry:
+            if (!isCurrentListResult(ev)) {
+                break;
+            }
             if (_streamCount < 16 && ev.fileCount > 0) {
                 _streamFiles[_streamCount++] = ev.files[0];
             }
             break;
 
         case UiEvent::FileListStreamEnd:
+            if (!isCurrentListResult(ev)) {
+                break;
+            }
             break;
 
         case UiEvent::FileListReady:
@@ -718,10 +851,7 @@ void UiScreens::onEvent(const UiEventPayload& ev) {
 
         case UiEvent::FileOpResult:
             if (_screen == UiScreenId::FileManager) {
-                UiCommand c{};
-                c.cmd = UiCmd::ListFolder;
-                strncpy(c.list.path, _listFolder, sizeof(c.list.path) - 1);
-                sendCmd(c);
+                requestFolderList(_listFolder);
             }
             break;
 

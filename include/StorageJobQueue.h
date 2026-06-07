@@ -54,6 +54,7 @@ public:
 
     bool begin(StorageManager* storage, EmitFn emit, void* user, LogFn log = nullptr);
     bool submit(const Job& job);
+    void invalidateBefore(uint32_t requestId);
     bool isBusy() const { return _phase != StreamPhase::Idle; }
 
     /** One cooperative step (SysCoord P4). Returns true if work remains. */
@@ -85,4 +86,5 @@ private:
     uint8_t _batchCount = 0;
     UiFileEntry _batch[16]{};
     uint32_t _nextId = 1;
+    uint32_t _minValidRequestId = 1;
 };
