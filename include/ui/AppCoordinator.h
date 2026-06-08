@@ -18,6 +18,7 @@ struct AppServices {
     BluetoothManager* bluetooth = nullptr;
 
     bool* isAudioPlaying = nullptr;
+    bool* isAzanPlaying = nullptr;
 
     bool* preFajrEnabled = nullptr;
     uint8_t* currentVolume = nullptr;

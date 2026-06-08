@@ -83,9 +83,14 @@ void AppCoordinator::executeEmergencyStop(bool* isAudioPlaying) {
     } else if (_svc.isAudioPlaying) {
         *_svc.isAudioPlaying = false;
     }
+    if (_svc.isAzanPlaying) {
+        *_svc.isAzanPlaying = false;
+    }
     UiEventPayload ev{};
     ev.type = UiEvent::AudioState;
     ev.audioPlaying = false;
+    ev.audioPaused = false;
+    ev.azanPlaying = false;
     emit(ev);
 }
 
@@ -137,9 +142,12 @@ void AppCoordinator::emit(const UiEventPayload& ev) {
 void AppCoordinator::handleStopAudio() {
     if (_svc.audio) _svc.audio->requestStop();
     if (_svc.isAudioPlaying) *_svc.isAudioPlaying = false;
+    if (_svc.isAzanPlaying) *_svc.isAzanPlaying = false;
     UiEventPayload ev{};
     ev.type = UiEvent::AudioState;
     ev.audioPlaying = false;
+    ev.audioPaused = false;
+    ev.azanPlaying = false;
     emit(ev);
 }
 
@@ -148,7 +156,7 @@ void AppCoordinator::handleSetVolumePct(uint8_t pct) {
     if (pct > 100) pct = 100;
     uint8_t v = (uint8_t)((pct * _svc.maxVolume + 50) / 100);
     if (v < _svc.minVolume) v = _svc.minVolume;
-  if (v > _svc.maxVolume) v = _svc.maxVolume;
+    if (v > _svc.maxVolume) v = _svc.maxVolume;
     *_svc.currentVolume = v;
     if (_svc.audio) _svc.audio->requestSetVolume(v);
     if (_svc.saveVolumeToNvs) _svc.saveVolumeToNvs(v);
@@ -338,36 +346,32 @@ void AppCoordinator::handlePlayFile(const char* path) {
     UiEventPayload ev{};
     ev.type = UiEvent::AudioState;
     ev.audioPlaying = _svc.isAudioPlaying && *_svc.isAudioPlaying;
+    ev.audioPaused = false;
+    ev.azanPlaying = _svc.isAzanPlaying && *_svc.isAzanPlaying;
     emit(ev);
 }
 
 void AppCoordinator::handlePauseAudio() {
-    // Since ESP32-audioI2S doesn't support native pause,
-    // we just stop for now. Could be enhanced with position tracking.
-    if (_svc.audio) {
-        _svc.audio->requestStop();
-        if (_svc.isAudioPlaying) {
-            *_svc.isAudioPlaying = false;
-        }
-    }
+    if (_svc.audio) _svc.audio->requestPause();
+    if (_svc.isAudioPlaying) *_svc.isAudioPlaying = false;
+    if (_svc.isAzanPlaying) *_svc.isAzanPlaying = false;
     UiEventPayload ev{};
     ev.type = UiEvent::AudioState;
     ev.audioPlaying = false;
+    ev.audioPaused = true;
+    ev.azanPlaying = false;
     emit(ev);
 }
 
 void AppCoordinator::handleResumeAudio() {
-    // Resume is equivalent to pausing for now, or could replay the last file.
-    // This is a placeholder for future enhancement with position tracking.
-    if (_svc.audio) {
-        _svc.audio->requestStop();
-        if (_svc.isAudioPlaying) {
-            *_svc.isAudioPlaying = false;
-        }
-    }
+    if (_svc.audio) _svc.audio->requestResume();
+    if (_svc.isAudioPlaying) *_svc.isAudioPlaying = true;
+    if (_svc.isAzanPlaying) *_svc.isAzanPlaying = false;
     UiEventPayload ev{};
     ev.type = UiEvent::AudioState;
-    ev.audioPlaying = false;
+    ev.audioPlaying = true;
+    ev.audioPaused = false;
+    ev.azanPlaying = false;
     emit(ev);
 }
 

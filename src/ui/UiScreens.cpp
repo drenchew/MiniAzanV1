@@ -54,8 +54,11 @@ void UiScreens::lvCbBtn(lv_event_t* e) {
     }
     // op=4  Pause / Resume audio
     if (op == 4) {
+        if (!g_active->_isAudioPlaying && !g_active->_isAudioPaused) {
+            return;
+        }
         UiCommand c{};
-        c.cmd = g_active->_isAudioPlaying ? UiCmd::PauseAudio : UiCmd::ResumeAudio;
+        c.cmd = g_active->_isAudioPaused ? UiCmd::ResumeAudio : UiCmd::PauseAudio;
         bridgePost(b, c);
         return;
     }
@@ -157,6 +160,7 @@ void UiScreens::rebuildShell(UiScreenId id) {
     // Null all widget pointers
     _lblClock = _lblDate = _lblPrayerNow = _lblNextPrayer = nullptr;
     _arcSunPath = _lblArcFajr = _lblArcIsha = nullptr;
+    _btnStopAzan = nullptr;
     _barProgress = _sliderVol = _swPreFajr = nullptr;
     _listFiles = _swTransfer = _lblSystem = _barBtProgress = _scroll = nullptr;
     _lblNowPlaying = _btnPauseResume = _lblCurrentPath = _btnUpFolder = nullptr;
@@ -389,17 +393,17 @@ void UiScreens::buildHome(lv_obj_t* area) {
     lv_label_set_text(_lblArcFajr, "Fajr");
     lv_obj_set_style_text_font(_lblArcFajr, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(_lblArcFajr, UiTheme::kMuted(), 0);
-    lv_obj_set_pos(_lblArcFajr, 8, 168);
+    lv_obj_set_pos(_lblArcFajr, 8, 174);
 
     _lblArcIsha = lv_label_create(area);
     lv_label_set_text(_lblArcIsha, "Isha");
     lv_obj_set_style_text_font(_lblArcIsha, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(_lblArcIsha, UiTheme::kMuted(), 0);
-    lv_obj_set_pos(_lblArcIsha, 200, 168);
+    lv_obj_set_pos(_lblArcIsha, 200, 174);
 
     // ── Prayer info card ──────────────────────────────────────────────────
     lv_obj_t* pCard = UiComponents::createCard(area, 224, 62);
-    lv_obj_align(pCard, LV_ALIGN_TOP_MID, 0, 178);
+    lv_obj_align(pCard, LV_ALIGN_TOP_MID, 0, 200); // todo: adjust y based on arc size
     // Left gold accent border
     lv_obj_set_style_border_side(pCard, LV_BORDER_SIDE_LEFT, 0);
     lv_obj_set_style_border_color(pCard, UiTheme::kGold(), 0);
@@ -418,14 +422,17 @@ void UiScreens::buildHome(lv_obj_t* area) {
     lv_obj_align(_lblNextPrayer, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 
     // ── STOP AZAN (emergency – always reachable) ──────────────────────────
-    lv_obj_t* stop = lv_btn_create(area);
-    lv_obj_set_size(stop, 224, 36);
-    lv_obj_align(stop, LV_ALIGN_BOTTOM_MID, 0, -4);
-    lv_obj_set_style_bg_color(stop, UiTheme::kDanger(), 0);
-    lv_obj_set_style_radius(stop, 8, 0);
-    lv_obj_set_style_shadow_width(stop, 0, 0);
-    lv_obj_add_event_cb(stop, lvCbBtn, LV_EVENT_CLICKED, (void*)btnTag(2));
-    lv_obj_t* sl = lv_label_create(stop);
+    _btnStopAzan = lv_btn_create(area);
+    lv_obj_set_size(_btnStopAzan, 224, 36);
+    lv_obj_align(_btnStopAzan, LV_ALIGN_BOTTOM_MID, 0, -4);
+    lv_obj_set_style_bg_color(_btnStopAzan, UiTheme::kDanger(), 0);
+    lv_obj_set_style_radius(_btnStopAzan, 8, 0);
+    lv_obj_set_style_shadow_width(_btnStopAzan, 0, 0);
+    lv_obj_add_event_cb(_btnStopAzan, lvCbBtn, LV_EVENT_CLICKED, (void*)btnTag(2));
+    if (!_isAzanPlaying) {
+        lv_obj_add_flag(_btnStopAzan, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_obj_t* sl = lv_label_create(_btnStopAzan);
     lv_label_set_text(sl, LV_SYMBOL_STOP " STOP AZAN");
     lv_obj_set_style_text_font(sl, &lv_font_montserrat_14, 0);
     lv_obj_center(sl);
@@ -645,27 +652,37 @@ void UiScreens::buildQuranPlayer(lv_obj_t* area) {
     buildSubScreenHeader(area, "Quran Player");
     int y0 = UiTheme::kSubHdrH;
 
+    lv_obj_t* info = lv_obj_create(area);
+    lv_obj_set_pos(info, 8, y0 + 2);
+    lv_obj_set_size(info, 224, 58);
+    UiTheme::styleTransparent(info);
+    lv_obj_set_flex_flow(info, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(info, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_row(info, 4, 0);
+
     // Current path
-    _lblCurrentPath = lv_label_create(area);
+    _lblCurrentPath = lv_label_create(info);
     lv_label_set_text(_lblCurrentPath, "Path: /");
+    lv_label_set_long_mode(_lblCurrentPath, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_font(_lblCurrentPath, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(_lblCurrentPath, UiTheme::kMuted(), 0);
     lv_obj_set_width(_lblCurrentPath, 220);
-    lv_obj_set_pos(_lblCurrentPath, 10, y0 + 2);
+    lv_obj_set_height(_lblCurrentPath, 18);
 
     // Now-playing label
-    _lblNowPlaying = lv_label_create(area);
+    _lblNowPlaying = lv_label_create(info);
     lv_label_set_text(_lblNowPlaying, "No file playing");
-    lv_label_set_long_mode(_lblNowPlaying, LV_LABEL_LONG_WRAP);
+    lv_label_set_long_mode(_lblNowPlaying, LV_LABEL_LONG_DOT);
     lv_obj_set_width(_lblNowPlaying, 220);
+    lv_obj_set_height(_lblNowPlaying, 18);
     lv_obj_set_style_text_font(_lblNowPlaying, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(_lblNowPlaying, UiTheme::kGold(), 0);
-    lv_obj_set_pos(_lblNowPlaying, 10, y0 + 18);
 
     // File list
-    lv_coord_t listH = lv_obj_get_height(area) - y0 - 40 - 40;
+    lv_coord_t listY = y0 + 64;
+    lv_coord_t listH = lv_obj_get_height(area) - listY - 40;
     _listFiles = lv_list_create(area);
-    lv_obj_set_pos(_listFiles, 0, y0 + 40);
+    lv_obj_set_pos(_listFiles, 0, listY);
     lv_obj_set_size(_listFiles, 240, listH);
     lv_obj_set_style_bg_color(_listFiles, UiTheme::kBg(), 0);
     lv_obj_set_style_border_width(_listFiles, 0, 0);
@@ -690,7 +707,14 @@ void UiScreens::buildQuranPlayer(lv_obj_t* area) {
     lv_label_set_text(lv_label_create(_btnPauseResume), LV_SYMBOL_PAUSE);
     lv_obj_center(lv_obj_get_child(_btnPauseResume, 0));
     lv_obj_add_event_cb(_btnPauseResume, lvCbBtn, LV_EVENT_CLICKED, (void*)btnTag(4));
-    lv_obj_add_state(_btnPauseResume, LV_STATE_DISABLED);
+    if (_isAudioPlaying) {
+        lv_label_set_text(lv_obj_get_child(_btnPauseResume, 0), LV_SYMBOL_PAUSE);
+    } else if (_isAudioPaused) {
+        lv_label_set_text(lv_obj_get_child(_btnPauseResume, 0), LV_SYMBOL_PLAY);
+    } else {
+        lv_label_set_text(lv_obj_get_child(_btnPauseResume, 0), LV_SYMBOL_PLAY);
+        lv_obj_add_state(_btnPauseResume, LV_STATE_DISABLED);
+    }
 
     lv_obj_t* stop = lv_btn_create(row);
     lv_obj_set_style_bg_color(stop, UiTheme::kDanger(), 0);
@@ -1049,10 +1073,22 @@ void UiScreens::onEvent(const UiEventPayload& ev) {
 
         case UiEvent::AudioState:
             _isAudioPlaying = ev.audioPlaying;
+            _isAudioPaused = ev.audioPaused;
+            _isAzanPlaying = ev.azanPlaying;
+            if (_btnStopAzan) {
+                if (_isAzanPlaying) {
+                    lv_obj_clear_flag(_btnStopAzan, LV_OBJ_FLAG_HIDDEN);
+                } else {
+                    lv_obj_add_flag(_btnStopAzan, LV_OBJ_FLAG_HIDDEN);
+                }
+            }
             if (_screen == UiScreenId::QuranPlayer && _btnPauseResume) {
                 if (_isAudioPlaying) {
                     lv_obj_clear_state(_btnPauseResume, LV_STATE_DISABLED);
                     lv_label_set_text(lv_obj_get_child(_btnPauseResume, 0), LV_SYMBOL_PAUSE);
+                } else if (_isAudioPaused) {
+                    lv_obj_clear_state(_btnPauseResume, LV_STATE_DISABLED);
+                    lv_label_set_text(lv_obj_get_child(_btnPauseResume, 0), LV_SYMBOL_PLAY);
                 } else {
                     lv_obj_add_state(_btnPauseResume, LV_STATE_DISABLED);
                     lv_label_set_text(lv_obj_get_child(_btnPauseResume, 0), LV_SYMBOL_PLAY);

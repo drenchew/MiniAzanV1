@@ -32,8 +32,8 @@ UiStatusBarWidgets UiComponents::createStatusBar(lv_obj_t* parent, lv_coord_t wi
     };
     sb.bt = mk(LV_SYMBOL_BLUETOOTH);
     sb.timeSrc = mk("RTC");
-    sb.vol = mk(LV_SYMBOL_VOLUME_MAX);
     sb.sd = mk(LV_SYMBOL_SD_CARD);
+    sb.vol = mk(LV_SYMBOL_VOLUME_MAX);
     sb.batt = mk(LV_SYMBOL_BATTERY_FULL);
     return sb;
 }
@@ -52,15 +52,31 @@ void UiComponents::updateStatusBar(UiStatusBarWidgets& sb, const UiEventPayload&
             lv_obj_set_style_text_color(sb.bt, UiTheme::kMuted(), 0);
         }
     }
-    if (sb.timeSrc) lv_label_set_text(sb.timeSrc, ev.clockSource[0] ? ev.clockSource : ev.timeSource);
-    if (sb.vol) {
-        char b[8];
-        snprintf(b, sizeof(b), "%u%%", (unsigned)ev.volumePct);
-        lv_label_set_text(sb.vol, b);
+    if (sb.timeSrc && ev.type == UiEvent::ClockUpdate) {
+        lv_label_set_text(sb.timeSrc, ev.clockSource[0] ? ev.clockSource : "RTC");
+    } else if (sb.timeSrc && ev.type == UiEvent::SystemStatus && ev.timeSource[0]) {
+        lv_label_set_text(sb.timeSrc, ev.timeSource);
     }
-    if (sb.sd) {
-        lv_label_set_text(sb.sd, ev.sdReady ? LV_SYMBOL_SD_CARD : LV_SYMBOL_WARNING);
-        lv_obj_set_style_text_color(sb.sd, ev.sdReady ? UiTheme::kAccent() : UiTheme::kDanger(), 0);
+    if (sb.vol) {
+        if (ev.type == UiEvent::VolumeState || ev.type == UiEvent::SystemStatus) {
+            sb.lastVolumePct = ev.volumePct;
+        }
+        if (sb.lastVolumePct < 50) {
+            lv_label_set_text(sb.vol, LV_SYMBOL_MUTE);
+            lv_obj_set_style_text_color(sb.vol, UiTheme::kMuted(), 0);
+        } else if (sb.lastVolumePct <= 75) {
+            lv_label_set_text(sb.vol, LV_SYMBOL_VOLUME_MID);
+            lv_obj_set_style_text_color(sb.vol, UiTheme::kGold(), 0);
+        } else {
+            lv_label_set_text(sb.vol, LV_SYMBOL_VOLUME_MAX);
+            lv_obj_set_style_text_color(sb.vol, UiTheme::kAccent(), 0);
+        }
+    }
+    if (sb.sd && ev.type == UiEvent::SystemStatus) {
+        sb.sdKnown = true;
+        sb.sdReady = ev.sdReady;
+        lv_label_set_text(sb.sd, LV_SYMBOL_SD_CARD);
+        lv_obj_set_style_text_color(sb.sd, sb.sdReady ? UiTheme::kAccent() : UiTheme::kMuted(), 0);
     }
 }
 

@@ -33,17 +33,20 @@ public:
     /** Queue play (any task) — executed on AudioTask only. */
     bool requestPlay(const char* path);
     bool requestStop();
+    bool requestPause();
+    bool requestResume();
     /** P0 fast lane: flush pending plays, wake AudioTask immediately. */
     bool requestEmergencyStop();
     bool requestSetVolume(uint8_t volume);
 
     bool isRunning();
     bool isPlayingFlag() const { return _playing; }
+    bool isPausedFlag() const { return _paused; }
 
     Audio& library() { return _audio; }
 
 private:
-    enum class CmdType : uint8_t { Play = 0, Stop, SetVolume };
+    enum class CmdType : uint8_t { Play = 0, Stop, Pause, Resume, SetVolume };
 
     struct Command {
         CmdType type = CmdType::Stop;
@@ -56,6 +59,8 @@ private:
     void drainCommands();
     bool playFromSdInternal(const char* path);
     void stopInternal();
+    void pauseInternal();
+    void resumeInternal();
     void logf(int level, const char* tag, const char* fmt, ...) const;
 
     Config _cfg{};
@@ -66,4 +71,5 @@ private:
     QueueHandle_t _cmdQ = nullptr;
     TaskHandle_t _task = nullptr;
     volatile bool _playing = false;
+    volatile bool _paused = false;
 };

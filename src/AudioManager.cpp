@@ -73,6 +73,24 @@ bool AudioManager::requestStop() {
     return xQueueSend(_cmdQ, &c, 0) == pdTRUE;
 }
 
+bool AudioManager::requestPause() {
+    if (!_cmdQ) {
+        return false;
+    }
+    Command c{};
+    c.type = CmdType::Pause;
+    return xQueueSend(_cmdQ, &c, 0) == pdTRUE;
+}
+
+bool AudioManager::requestResume() {
+    if (!_cmdQ) {
+        return false;
+    }
+    Command c{};
+    c.type = CmdType::Resume;
+    return xQueueSend(_cmdQ, &c, 0) == pdTRUE;
+}
+
 bool AudioManager::requestEmergencyStop() {
     if (!_cmdQ) {
         return false;
@@ -112,6 +130,12 @@ void AudioManager::drainCommands() {
                 break;
             case CmdType::Stop:
                 stopInternal();
+                break;
+            case CmdType::Pause:
+                pauseInternal();
+                break;
+            case CmdType::Resume:
+                resumeInternal();
                 break;
             case CmdType::SetVolume: {
                 uint8_t v = c.volume;
@@ -169,6 +193,7 @@ bool AudioManager::playFromSdInternal(const char* path) {
     }
 
     _playing = true;
+    _paused = false;
     logf(LOG_INFO, "AUDIO", "Playing %s (%lu bytes)", path, (unsigned long)sz);
     return true;
 }
@@ -176,11 +201,32 @@ bool AudioManager::playFromSdInternal(const char* path) {
 void AudioManager::stopInternal() {
     _audio.stopSong();
     _playing = false;
+    _paused = false;
     if (_storage) {
         _storage->setPlaybackLocked(false);
     }
     if (AzanSafeMode::isActive()) {
         AzanSafeMode::exit();
+    }
+}
+
+void AudioManager::pauseInternal() {
+    if (!_playing || _paused) {
+        return;
+    }
+    if (_audio.pauseResume()) {
+        _paused = true;
+        logf(LOG_INFO, "AUDIO", "Paused");
+    }
+}
+
+void AudioManager::resumeInternal() {
+    if (!_playing || !_paused) {
+        return;
+    }
+    if (_audio.pauseResume()) {
+        _paused = false;
+        logf(LOG_INFO, "AUDIO", "Resumed");
     }
 }
 
@@ -198,8 +244,9 @@ void AudioManager::taskLoop() {
         ulTaskNotifyTake(pdTRUE, 0);
         drainCommands();
         _audio.loop();
-        if (_playing && !_audio.isRunning()) {
+        if (_playing && !_paused && !_audio.isRunning()) {
             _playing = false;
+            _paused = false;
             if (_storage) {
                 _storage->setPlaybackLocked(false);
             }

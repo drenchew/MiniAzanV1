@@ -59,6 +59,7 @@ private:
     lv_obj_t* _arcSunPath    = nullptr;  // sun-path arc widget
     lv_obj_t* _lblArcFajr    = nullptr;  // Fajr time label near arc left endpoint
     lv_obj_t* _lblArcIsha    = nullptr;  // Isha time label near arc right endpoint
+    lv_obj_t* _btnStopAzan   = nullptr;  // visible only while azan is actively calling
 
     // ── Azan Settings ─────────────────────────────────────────────────────
     lv_obj_t* _sliderVol  = nullptr;
@@ -98,6 +99,8 @@ private:
 
     // Audio state
     bool _isAudioPlaying = false;
+    bool _isAudioPaused = false;
+    bool _isAzanPlaying = false;
 
     // Last known events (for arc updates)
     UiEventPayload _lastPrayer{};

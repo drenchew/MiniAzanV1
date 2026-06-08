@@ -128,6 +128,8 @@ struct UiEventPayload {
     bool preFajr = false;
     uint8_t azanIndex = 0;
     bool audioPlaying = false;
+    bool audioPaused = false;
+    bool azanPlaying = false;
 
     bool btEnabled = false;
     bool btConnected = false;

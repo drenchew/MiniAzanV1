@@ -89,6 +89,7 @@ const char* NVS_PREFAJR_KEY = "prefajr";
 const char* NVS_AZAN_IDX_KEY = "azan_idx";
 
 bool wasAudioPlaying = false;
+bool isAzanPlaying = false;
 
 // --- LOGGING AND TIMING VARIABLES ---
 unsigned long lastHealthLogMs = 0;
@@ -236,6 +237,13 @@ static bool prayerIsAudioPlaying() {
 
 static void prayerSetAudioPlaying(bool playing) {
     isAudioPlaying = playing;
+    isAzanPlaying = playing;
+    UiEventPayload ev{};
+    ev.type = UiEvent::AudioState;
+    ev.audioPlaying = playing;
+    ev.audioPaused = false;
+    ev.azanPlaying = playing;
+    uiBridge.postEvent(ev, 0);
 }
 
 static void prayerSetCurrentFile(const char* file) {
@@ -264,6 +272,10 @@ void setup() {
     
     appLog(APP_LOG_INFO, "BOOT", "Initializing UI bridge...");
     uiBridge.begin();
+
+    // Load persisted UI/audio preferences before services and audio init.
+    currentVolume = loadVolumeFromNVS();
+    loadUiPrefsFromNVS();
     
     appLog(APP_LOG_INFO, "BOOT", "Initializing app coordinator...");
     AppServices appSvc{};
@@ -273,6 +285,7 @@ void setup() {
     appSvc.storageJobs = &storageJobs;
     appSvc.bluetooth = &bluetoothMgr;
     appSvc.isAudioPlaying = &isAudioPlaying;
+    appSvc.isAzanPlaying = &isAzanPlaying;
     appSvc.preFajrEnabled = &preFajrEnabled;
     appSvc.currentVolume = &currentVolume;
     appSvc.minVolume = MIN_VOLUME;
@@ -297,7 +310,9 @@ void setup() {
     appLog(APP_LOG_INFO, "BOOT", "Initializing audio manager...");
     AudioManager::Config audioCfg{};
     audioCfg.pins = {I2S_BCLK, I2S_LRC, I2S_DOUT};
-    audioCfg.defaultVolume = DEFAULT_VOLUME;
+    audioCfg.defaultVolume = currentVolume;
+    audioCfg.minVolume = MIN_VOLUME;
+    audioCfg.maxVolume = MAX_VOLUME;
     audioMgr.begin(storageMgr, audioCfg, appLog);
     
 
@@ -323,10 +338,6 @@ void setup() {
     SystemCoordinator::Config sysCoordCfg{};
     sysCoord.begin(uiBridge, appCoord, timeMgr, prayerSched, bluetoothMgr, sysCoordCfg);
     sysCoord.setIsAudioPlayingPtr(&isAudioPlaying);
-    
-    // Load saved preferences
-    currentVolume = loadVolumeFromNVS();
-    loadUiPrefsFromNVS();
     
 #if !defined(MINI_AZAN_TOUCH_VALIDATION_MODE) || !MINI_AZAN_TOUCH_VALIDATION_MODE
     appLog(APP_LOG_INFO, "BOOT", "Initializing UI...");
@@ -354,6 +365,13 @@ void loop() {
     bool audioRunning = audioMgr.isRunning();
     if (isAudioPlaying && wasAudioPlaying && !audioRunning) {
         isAudioPlaying = false;
+        isAzanPlaying = false;
+        UiEventPayload ev{};
+        ev.type = UiEvent::AudioState;
+        ev.audioPlaying = false;
+        ev.audioPaused = false;
+        ev.azanPlaying = false;
+        uiBridge.postEvent(ev, 0);
         appLogf(APP_LOG_INFO, "AUDIO", "azan_done duration_ms=%lu file=%s",
                 (unsigned long)(millis() - audioStartTime),
                 currentPlayingFile[0] ? currentPlayingFile : "n/a");
