@@ -3,6 +3,7 @@
 #include <time.h>
 #include <sys/time.h>
 #include <stdarg.h>
+#include <cstring>
 
 #ifndef LOG_ERROR
 #define LOG_ERROR 0
@@ -48,21 +49,23 @@ bool TimeManager::begin(const Config& cfg, LogFn logFn) {
     _lastDriftSec = 0;
 
     if (!_rtc.begin()) {
-        logf(LOG_WARN, "CLK", "RTC missing — NTP fallback when WiFi up");
+        seedFallbackClock();
+        logf(LOG_WARN, "CLK", "RTC missing — using fallback clock 2026-01-01 00:00:00");
         requestNtpSync();
         return true;
     }
 
-    struct tm rtcTm{};
     if (!refreshRtcCache()) {
-        logf(LOG_WARN, "CLK", "RTC read failed at boot");
+        seedFallbackClock();
+        logf(LOG_WARN, "CLK", "RTC read failed at boot — using fallback clock 2026-01-01 00:00:00");
         requestNtpSync();
         return true;
     }
 
     _rtcBatterySuspect = _rtc.hasLostPower() || !_rtc.isTimeValid(_cachedRtc);
     if (_rtcBatterySuspect) {
-        logf(LOG_WARN, "CLK", "RTC invalid or lost power");
+        seedFallbackClock();
+        logf(LOG_WARN, "CLK", "RTC invalid or lost power — using fallback clock 2026-01-01 00:00:00");
         requestNtpSync();
         return true;
     }
@@ -114,10 +117,30 @@ uint32_t TimeManager::getLastRtcReadAgeMs() const {
     return millis() - _cachedRtcMillis;
 }
 
+void TimeManager::seedFallbackClock() {
+    memset(&_cachedRtc, 0, sizeof(_cachedRtc));
+    _cachedRtc.tm_year = 2026 - 1900;
+    _cachedRtc.tm_mon = 0;
+    _cachedRtc.tm_mday = 1;
+    _cachedRtc.tm_hour = 0;
+    _cachedRtc.tm_min = 0;
+    _cachedRtc.tm_sec = 0;
+    _cachedRtc.tm_isdst = -1;
+    mktime(&_cachedRtc);
+
+    _cachedRtcValid = true;
+    _cachedRtcMillis = millis();
+    _source = Source::Fallback;
+    _rtcUsable = false;
+    _rtcBatterySuspect = true;
+}
+
 bool TimeManager::refreshRtcCache() {
     struct tm t{};
     if (!_rtc.readTime(t) || !_rtc.isTimeValid(t)) {
-        _cachedRtcValid = false;
+        if (_source != Source::Fallback) {
+            _cachedRtcValid = false;
+        }
         return false;
     }
     _cachedRtc = t;
@@ -267,7 +290,7 @@ void TimeManager::runDiagnostics() {
          sysOk ? sysBuf : "FAIL",
          drift,
          (unsigned long)getLastRtcReadAgeMs(),
-         _source == Source::Rtc ? "RTC" : "NTP",
+         _source == Source::Rtc ? "RTC" : (_source == Source::NtpFallback ? "NTP" : "FALLBACK"),
          _rtcBatterySuspect ? "BAD" : "OK",
          _debugOffsetMinutes,
          (unsigned long)_updateCount);
@@ -284,7 +307,7 @@ void TimeManager::runDiagnostics() {
 void TimeManager::update() {
     _updateCount++;
 
-    if (millis() - _lastRtcPollMs >= _cfg.rtcPollIntervalMs) {
+    if (_rtc.isPresent() && millis() - _lastRtcPollMs >= _cfg.rtcPollIntervalMs) {
         _lastRtcPollMs = millis();
         if (refreshRtcCache()) {
             _rtcUsable = true;

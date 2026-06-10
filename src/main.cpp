@@ -490,7 +490,7 @@ void printStatus() {
             storageMgr.isReady() ? "ok" : "fail",
             isAudioPlaying ? "play" : "idle",
             timeMgr.rtcUsable() ? "RTC"
-                    : (timeMgr.activeSource() == TimeManager::Source::NtpFallback ? "NTP" : "NONE"),
+                    : (timeMgr.activeSource() == TimeManager::Source::NtpFallback ? "NTP" : "FALLBACK"),
             preFajrEnabled ? "on" : "off",
             activeAzanPath());
     int next = prayerSched.minutesToNextPrayer();

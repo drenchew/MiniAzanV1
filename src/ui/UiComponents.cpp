@@ -1,5 +1,6 @@
 #include "ui/UiComponents.h"
 #include "ui/UiTheme.h"
+#include <cstring>
 
 #if defined(MINI_AZAN_UI_ENABLE) && MINI_AZAN_UI_ENABLE
 
@@ -23,16 +24,32 @@ UiStatusBarWidgets UiComponents::createStatusBar(lv_obj_t* parent, lv_coord_t wi
     lv_obj_set_flex_flow(sb.root, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(sb.root, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    auto mk = [&](const char* sym) {
-        lv_obj_t* l = lv_label_create(sb.root);
+    auto mkOn = [&](lv_obj_t* parent, const char* sym) {
+        lv_obj_t* l = lv_label_create(parent);
         lv_label_set_text(l, sym);
         lv_obj_set_style_text_color(l, UiTheme::kMuted(), 0);
         lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
         return l;
     };
+    auto mk = [&](const char* sym) {
+        return mkOn(sb.root, sym);
+    };
     sb.bt = mk(LV_SYMBOL_BLUETOOTH);
     sb.timeSrc = mk("RTC");
-    sb.sd = mk(LV_SYMBOL_SD_CARD);
+
+    sb.sdGroup = lv_obj_create(sb.root);
+    lv_obj_set_style_bg_opa(sb.sdGroup, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(sb.sdGroup, 0, 0);
+    lv_obj_set_style_pad_all(sb.sdGroup, 0, 0);
+    lv_obj_set_style_pad_column(sb.sdGroup, 2, 0);
+    lv_obj_set_size(sb.sdGroup, 30, UiTheme::kStatusH);
+    lv_obj_set_flex_flow(sb.sdGroup, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(sb.sdGroup, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(sb.sdGroup, LV_OBJ_FLAG_SCROLLABLE);
+    sb.sd = mkOn(sb.sdGroup, LV_SYMBOL_SD_CARD);
+    sb.rtcWarn = mkOn(sb.sdGroup, "!");
+    lv_obj_set_style_text_color(sb.rtcWarn, UiTheme::kGoldBright(), 0);
+    lv_obj_add_flag(sb.rtcWarn, LV_OBJ_FLAG_HIDDEN);
     sb.vol = mk(LV_SYMBOL_VOLUME_MAX);
     sb.batt = mk(LV_SYMBOL_BATTERY_FULL);
     return sb;
@@ -77,6 +94,15 @@ void UiComponents::updateStatusBar(UiStatusBarWidgets& sb, const UiEventPayload&
         sb.sdReady = ev.sdReady;
         lv_label_set_text(sb.sd, LV_SYMBOL_SD_CARD);
         lv_obj_set_style_text_color(sb.sd, sb.sdReady ? UiTheme::kAccent() : UiTheme::kMuted(), 0);
+    }
+    if (sb.rtcWarn && (ev.type == UiEvent::SystemStatus || ev.type == UiEvent::ClockUpdate)) {
+        if (ev.rtcBatteryFail || (!ev.rtcOk && ev.clockSource[0] && strcmp(ev.clockSource, "RTC") != 0)) {
+            lv_label_set_text(sb.rtcWarn, "!");
+            lv_obj_set_style_text_color(sb.rtcWarn, UiTheme::kGoldBright(), 0);
+            lv_obj_clear_flag(sb.rtcWarn, LV_OBJ_FLAG_HIDDEN);
+        } else if (ev.rtcOk) {
+            lv_obj_add_flag(sb.rtcWarn, LV_OBJ_FLAG_HIDDEN);
+        }
     }
 }
 

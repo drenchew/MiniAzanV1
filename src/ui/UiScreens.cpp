@@ -3,10 +3,24 @@
 #include "UIManager.h"
 #include "system/AzanSafeMode.h"
 #include "AppLog.h"
+#include <math.h>
 
 #if defined(MINI_AZAN_UI_ENABLE) && MINI_AZAN_UI_ENABLE
 
 static UiScreens* g_active = nullptr;
+
+namespace {
+
+constexpr int kPrayerCount = 6;
+constexpr float kSunArcStartDeg = 180.0f;
+constexpr float kSunArcSweepDeg = 180.0f;
+constexpr float kDegToRad = 3.14159265358979323846f / 180.0f;
+
+const char* const kDefaultPrayerArcIcons[kPrayerCount] = {
+    "•", "•", "•", "•", "•", "•"
+};
+
+}  // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -121,6 +135,20 @@ void UiScreens::lvCbBtn(lv_event_t* e) {
         g_active->show(UiScreenId::QuranPlayer);
         return;
     }
+    // op=13/14 Prayer Times previous / next day
+    if (op == 13 || op == 14) {
+        if (g_active->_screen == UiScreenId::PrayerTimes) {
+            int yday = g_active->_selectedPrayerYday > 0
+                ? g_active->_selectedPrayerYday
+                : g_active->_lastClock.yday;
+            if (yday <= 0) yday = 1;
+            yday += (op == 13) ? -1 : 1;
+            if (yday < 1) yday = 1;
+            if (yday > 366) yday = 366;
+            g_active->requestPrayerTimesForDay(yday);
+        }
+        return;
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -159,6 +187,17 @@ void UiScreens::sendCmd(UiCommand cmd, bool urgent) {
     bridgePost(_bridge, cmd, urgent);
 }
 
+void UiScreens::setPrayerArcIcons(const char* const icons[6]) {
+    for (int i = 0; i < kPrayerCount; i++) {
+        _prayerArcIcons[i] = (icons && icons[i] && icons[i][0])
+            ? icons[i]
+            : kDefaultPrayerArcIcons[i];
+        if (_prayerArcMarkerIcons[i]) {
+            lv_label_set_text(_prayerArcMarkerIcons[i], _prayerArcIcons[i]);
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Navigation
 // ─────────────────────────────────────────────────────────────────────────────
@@ -175,14 +214,19 @@ void UiScreens::rebuildShell(UiScreenId id) {
 
     // Null all widget pointers
     _lblClock = _lblDate = _lblPrayerNow = _lblNextPrayer = nullptr;
-    _arcSunPath = _lblArcFajr = _lblArcIsha = nullptr;
+    _arcSunPath = _sunMarker = _lblArcFajr = _lblArcIsha = nullptr;
     _btnStopAzan = nullptr;
     _barProgress = _sliderVol = _swPreFajr = nullptr;
+    _lblPrayerDate = nullptr;
     _listFiles = _swTransfer = _lblSystem = _barBtProgress = _scroll = nullptr;
     _lblPageInfo = _btnPrevPage = _btnNextPage = nullptr;
     _lblNowPlaying = _btnPauseResume = _lblCurrentPath = _btnUpFolder = nullptr;
     _filePathCount = 0;
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < kPrayerCount; i++) {
+        _prayerArcMarkers[i] = nullptr;
+        _prayerArcMarkerIcons[i] = nullptr;
+    }
+    for (int i = 0; i < 6; i++) {
         _prayerCards[i]      = nullptr;
         _prayerTimeLabels[i] = nullptr;
     }
@@ -210,7 +254,7 @@ void UiScreens::requestDataForScreen(UiScreenId id) {
             // Status bar updates automatically via events; no specific request needed
             break;
         case UiScreenId::PrayerTimes:
-            c.cmd = UiCmd::RequestPrayerTimes; sendCmd(c);
+            requestPrayerTimesForDay(_selectedPrayerYday);
             break;
         case UiScreenId::AzanSettings:
             requestFolderList("/azan");
@@ -228,6 +272,26 @@ void UiScreens::requestDataForScreen(UiScreenId id) {
             break;
         default: break;
     }
+}
+
+void UiScreens::requestPrayerTimesForDay(int yday) {
+    const int requestedYday = yday;
+    if (yday > 366) yday = 366;
+
+    if (yday > 0) {
+        _selectedPrayerYday = yday;
+    }
+    if (_lblPrayerDate) {
+        char buf[40];
+        if (requestedYday <= 0) snprintf(buf, sizeof(buf), "Loading today...");
+        else                    snprintf(buf, sizeof(buf), "Loading day %d...", yday);
+        lv_label_set_text(_lblPrayerDate, buf);
+    }
+
+    UiCommand c{};
+    c.cmd = UiCmd::RequestPrayerTimes;
+    c.prayer.yday = yday > 0 ? yday : 0;
+    sendCmd(c);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -273,11 +337,8 @@ void UiScreens::updateSunArc() {
 
     int fajrMin = (int)_lastPrayer.prayerMinutes[0]; // index 0 = Fajr
     int ishaMin = (int)_lastPrayer.prayerMinutes[5]; // index 5 = Isha
-    int curMin  = _lastClock.hour * 60 + _lastClock.minute;
 
     // Update Fajr/Isha time labels
-    static const char* kMonNames[] = {
-        "Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"};
     if (_lblArcFajr && fajrMin > 0) {
         char buf[8];
         snprintf(buf, sizeof(buf), "%02d:%02d", fajrMin / 60, fajrMin % 60);
@@ -289,18 +350,103 @@ void UiScreens::updateSunArc() {
         lv_label_set_text(_lblArcIsha, buf);
     }
 
-    // Compute arc value 0-100
     if (fajrMin <= 0 || ishaMin <= fajrMin) return;
 
-    int pct;
-    if (curMin <= fajrMin) {
-        pct = 0;
-    } else if (curMin >= ishaMin) {
-        pct = 100;
-    } else {
-        pct = (curMin - fajrMin) * 100 / (ishaMin - fajrMin);
+    float sunProgress = 0.0f;
+    if (currentSunProgress(sunProgress)) {
+        lv_arc_set_value(_arcSunPath, (int)(sunProgress * 100.0f + 0.5f));
+        if (_sunMarker) {
+            setArcObjectCenter(_sunMarker, arcPointForProgress(sunProgress));
+            lv_obj_move_foreground(_sunMarker);
+        }
     }
-    lv_arc_set_value(_arcSunPath, pct);
+
+    updatePrayerArcMarkers();
+}
+
+bool UiScreens::prayerProgressFromMinutes(int prayerMinutes, float& progress) const {
+    const int fajrMin = (int)_lastPrayer.prayerMinutes[0];
+    const int ishaMin = (int)_lastPrayer.prayerMinutes[5];
+    if (fajrMin <= 0 || ishaMin <= fajrMin || prayerMinutes <= 0) {
+        return false;
+    }
+
+    progress = (float)(prayerMinutes - fajrMin) / (float)(ishaMin - fajrMin);
+    if (progress < 0.0f) progress = 0.0f;
+    if (progress > 1.0f) progress = 1.0f;
+    return true;
+}
+
+bool UiScreens::currentSunProgress(float& progress) const {
+    const int fajrSec = (int)_lastPrayer.prayerMinutes[0] * 60;
+    const int ishaSec = (int)_lastPrayer.prayerMinutes[5] * 60;
+    if (fajrSec <= 0 || ishaSec <= fajrSec) {
+        return false;
+    }
+
+    const int currentSec =
+        ((_lastClock.hour * 60) + _lastClock.minute) * 60 + _lastClock.second;
+    progress = (float)(currentSec - fajrSec) / (float)(ishaSec - fajrSec);
+    if (progress < 0.0f) progress = 0.0f;
+    if (progress > 1.0f) progress = 1.0f;
+    return true;
+}
+
+UiScreens::ArcPoint UiScreens::arcPointForProgress(float progress) const {
+    if (progress < 0.0f) progress = 0.0f;
+    if (progress > 1.0f) progress = 1.0f;
+
+    const lv_coord_t arcX = _arcSunPath ? lv_obj_get_x(_arcSunPath) : 40;
+    const lv_coord_t arcY = _arcSunPath ? lv_obj_get_y(_arcSunPath) : 91;
+    const lv_coord_t arcW = _arcSunPath ? lv_obj_get_width(_arcSunPath) : 160;
+    const lv_coord_t arcH = _arcSunPath ? lv_obj_get_height(_arcSunPath) : 160;
+    const float radius = ((arcW < arcH ? arcW : arcH) * 0.5f) - 3.0f;
+    const float angleRad = (kSunArcStartDeg + (progress * kSunArcSweepDeg)) * kDegToRad;
+
+    ArcPoint p{};
+    p.x = (lv_coord_t)lroundf((float)arcX + ((float)arcW * 0.5f) + (cosf(angleRad) * radius));
+    p.y = (lv_coord_t)lroundf((float)arcY + ((float)arcH * 0.5f) + (sinf(angleRad) * radius));
+    return p;
+}
+
+void UiScreens::setArcObjectCenter(lv_obj_t* obj, const ArcPoint& p) {
+    if (!obj) return;
+    lv_obj_set_pos(obj, p.x - lv_obj_get_width(obj) / 2, p.y - lv_obj_get_height(obj) / 2);
+}
+
+void UiScreens::stylePrayerArcMarker(int idx, bool active) {
+    if (idx < 0 || idx >= kPrayerCount || !_prayerArcMarkers[idx]) return;
+
+    lv_obj_t* marker = _prayerArcMarkers[idx];
+    lv_obj_set_style_bg_color(marker, active ? UiTheme::kGoldBright() : UiTheme::kCard(), 0);
+    lv_obj_set_style_bg_opa(marker, active ? LV_OPA_90 : LV_OPA_50, 0);
+    lv_obj_set_style_border_color(marker, active ? UiTheme::kGoldBright() : UiTheme::kMuted(), 0);
+    lv_obj_set_style_border_opa(marker, active ? LV_OPA_90 : LV_OPA_40, 0);
+    lv_obj_set_style_shadow_color(marker, UiTheme::kGoldBright(), 0);
+    lv_obj_set_style_shadow_width(marker, active ? 9 : 0, 0);
+    lv_obj_set_style_shadow_opa(marker, active ? LV_OPA_60 : LV_OPA_TRANSP, 0);
+
+    if (_prayerArcMarkerIcons[idx]) {
+        lv_obj_set_style_text_color(_prayerArcMarkerIcons[idx],
+                                    active ? UiTheme::kBg() : UiTheme::kMuted(), 0);
+    }
+}
+
+void UiScreens::updatePrayerArcMarkers() {
+    for (int i = 0; i < kPrayerCount; i++) {
+        if (!_prayerArcMarkers[i]) continue;
+
+        float progress = 0.0f;
+        const bool hasProgress = prayerProgressFromMinutes((int)_lastPrayer.prayerMinutes[i], progress);
+        if (!hasProgress) {
+            lv_obj_add_flag(_prayerArcMarkers[i], LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
+
+        lv_obj_clear_flag(_prayerArcMarkers[i], LV_OBJ_FLAG_HIDDEN);
+        setArcObjectCenter(_prayerArcMarkers[i], arcPointForProgress(progress));
+        stylePrayerArcMarker(i, i == _lastPrayer.currentPrayerIndex);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -399,11 +545,40 @@ void UiScreens::buildHome(lv_obj_t* area) {
     lv_obj_set_style_arc_color(_arcSunPath, UiTheme::kGold(), LV_PART_INDICATOR);
     lv_obj_set_style_arc_width(_arcSunPath, 6, LV_PART_INDICATOR);
 
-    // Knob – bright sun dot
-    lv_obj_set_style_bg_color(_arcSunPath, UiTheme::kGoldBright(), LV_PART_KNOB);
-    lv_obj_set_style_bg_opa(_arcSunPath, LV_OPA_COVER, LV_PART_KNOB);
-    lv_obj_set_style_pad_all(_arcSunPath, 5, LV_PART_KNOB);
+    // The moving sun is a custom marker below; hide LVGL's integer-rounded knob.
+    lv_obj_set_style_bg_opa(_arcSunPath, LV_OPA_TRANSP, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(_arcSunPath, 0, LV_PART_KNOB);
     lv_obj_set_style_border_width(_arcSunPath, 0, LV_PART_KNOB);
+
+    for (int i = 0; i < kPrayerCount; i++) {
+        _prayerArcMarkers[i] = lv_obj_create(area);
+        lv_obj_set_size(_prayerArcMarkers[i], 15, 15);
+        lv_obj_set_style_radius(_prayerArcMarkers[i], LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_border_width(_prayerArcMarkers[i], 1, 0);
+        lv_obj_set_style_pad_all(_prayerArcMarkers[i], 0, 0);
+        lv_obj_clear_flag(_prayerArcMarkers[i], LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_clear_flag(_prayerArcMarkers[i], LV_OBJ_FLAG_CLICKABLE);
+
+        _prayerArcMarkerIcons[i] = lv_label_create(_prayerArcMarkers[i]);
+        lv_label_set_text(_prayerArcMarkerIcons[i],
+                          _prayerArcIcons[i] ? _prayerArcIcons[i] : kDefaultPrayerArcIcons[i]);
+        lv_obj_set_style_text_font(_prayerArcMarkerIcons[i], &lv_font_montserrat_14, 0);
+        lv_obj_center(_prayerArcMarkerIcons[i]);
+        stylePrayerArcMarker(i, false);
+    }
+
+    _sunMarker = lv_obj_create(area);
+    lv_obj_set_size(_sunMarker, 13, 13);
+    lv_obj_set_style_radius(_sunMarker, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(_sunMarker, UiTheme::kGoldBright(), 0);
+    lv_obj_set_style_bg_opa(_sunMarker, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(_sunMarker, 0, 0);
+    lv_obj_set_style_shadow_color(_sunMarker, UiTheme::kGoldBright(), 0);
+    lv_obj_set_style_shadow_width(_sunMarker, 7, 0);
+    lv_obj_set_style_shadow_opa(_sunMarker, LV_OPA_50, 0);
+    lv_obj_set_style_pad_all(_sunMarker, 0, 0);
+    lv_obj_clear_flag(_sunMarker, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(_sunMarker, LV_OBJ_FLAG_CLICKABLE);
 
     // ── Fajr / Isha labels (near arc endpoints at y≈171) ─────────────────
     _lblArcFajr = lv_label_create(area);
@@ -453,6 +628,8 @@ void UiScreens::buildHome(lv_obj_t* area) {
     lv_label_set_text(sl, LV_SYMBOL_STOP " STOP AZAN");
     lv_obj_set_style_text_font(sl, &lv_font_montserrat_14, 0);
     lv_obj_center(sl);
+
+    updateSunArc();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -530,17 +707,48 @@ void UiScreens::buildMenu(lv_obj_t* area) {
 // PRAYER TIMES SCREEN
 // ─────────────────────────────────────────────────────────────────────────────
 
-static const char* kPrayerLabels[]    = {"Fajr", "Sunrise", "Dhuhr", "Asr", "Maghrib", "Isha"};
-static const int   kPrayerDisplayIdx[] = {0, 2, 3, 4, 5};
+static const char* kPrayerLabels[]    = {"Fajr", "Duha", "Dhuhr", "Asr", "Maghrib", "Isha"};
+static const int   kPrayerDisplayIdx[] = {0, 1, 2, 3, 4, 5};
 
 void UiScreens::buildPrayerTimes(lv_obj_t* area) {
     buildSubScreenHeader(area, "Prayer Times");
     int remainH = lv_obj_get_height(area) - UiTheme::kSubHdrH;
     _scroll = UiComponents::createScrollContent(area, UiTheme::kSubHdrH, remainH);
 
-    for (int k = 0; k < 5; k++) {
+    lv_obj_t* dayCard = UiComponents::createCard(_scroll, 216, 54);
+    _lblPrayerDate = lv_label_create(dayCard);
+    lv_label_set_text(_lblPrayerDate, "Today");
+    lv_obj_set_style_text_color(_lblPrayerDate, UiTheme::kGold(), 0);
+    lv_obj_set_style_text_font(_lblPrayerDate, &lv_font_montserrat_14, 0);
+    lv_obj_align(_lblPrayerDate, LV_ALIGN_TOP_MID, 0, 0);
+
+    lv_obj_t* row = lv_obj_create(dayCard);
+    lv_obj_set_size(row, 200, 28);
+    lv_obj_align(row, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    auto addDayBtn = [&](const char* text, uint8_t op) {
+        lv_obj_t* b = lv_btn_create(row);
+        lv_obj_set_size(b, 92, 26);
+        lv_obj_set_style_bg_color(b, UiTheme::kCard(), 0);
+        lv_obj_set_style_shadow_width(b, 0, 0);
+        lv_obj_add_event_cb(b, lvCbBtn, LV_EVENT_CLICKED, (void*)btnTag(op));
+        lv_obj_t* l = lv_label_create(b);
+        lv_label_set_text(l, text);
+        lv_obj_set_style_text_color(l, UiTheme::kText(), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
+        lv_obj_center(l);
+    };
+    addDayBtn("< Prev", 13);
+    addDayBtn("Next >", 14);
+
+    for (int k = 0; k < 6; k++) {
         int idx = kPrayerDisplayIdx[k];
-        lv_obj_t* card = UiComponents::createCard(_scroll, 216, 52);
+        lv_obj_t* card = UiComponents::createCard(_scroll, 216, 40);
         _prayerCards[k] = card;
         lv_obj_t* nm = lv_label_create(card);
         lv_label_set_text(nm, kPrayerLabels[idx]);
@@ -557,9 +765,7 @@ void UiScreens::buildPrayerTimes(lv_obj_t* area) {
     lv_obj_set_style_bg_color(ref, UiTheme::kCard(), 0);
     lv_obj_add_event_cb(ref, [](lv_event_t*) {
         if (!g_active) return;
-        UiCommand c{};
-        c.cmd = UiCmd::RequestPrayerTimes;
-        g_active->sendCmd(c);
+        g_active->requestPrayerTimesForDay(g_active->_selectedPrayerYday);
     }, LV_EVENT_CLICKED, nullptr);
     lv_obj_t* rl = lv_label_create(ref);
     lv_label_set_text(rl, LV_SYMBOL_REFRESH " Refresh");
@@ -1064,7 +1270,9 @@ void UiScreens::onEvent(const UiEventPayload& ev) {
             break;
 
         case UiEvent::PrayerTimesUpdate:
-            _lastPrayer = ev;
+            if (ev.prayerIsToday) {
+                _lastPrayer = ev;
+            }
             if (_lblPrayerNow && _screen == UiScreenId::Home) {
                 if (ev.currentPrayerIndex >= 0)
                     snprintf(buf, sizeof(buf), "Now: %s", ev.currentPrayerName);
@@ -1080,7 +1288,19 @@ void UiScreens::onEvent(const UiEventPayload& ev) {
             }
             if (_screen == UiScreenId::Home) updateSunArc();
             if (_screen == UiScreenId::PrayerTimes) {
-                for (int k = 0; k < 5; k++) {
+                _selectedPrayerYday = ev.prayerYday > 0 ? ev.prayerYday : _selectedPrayerYday;
+                if (_lblPrayerDate) {
+                    static const char* kMon[] = {
+                        "Jan","Feb","Mar","Apr","May","Jun",
+                        "Jul","Aug","Sep","Oct","Nov","Dec"};
+                    int mi = ev.prayerMonth - 1;
+                    if (mi < 0 || mi > 11) mi = 0;
+                    const char* rel = ev.prayerIsToday ? "Today" : "Day";
+                    snprintf(buf, sizeof(buf), "%s: %d %s %04d",
+                             rel, ev.prayerMday, kMon[mi], ev.prayerYear);
+                    lv_label_set_text(_lblPrayerDate, buf);
+                }
+                for (int k = 0; k < 6; k++) {
                     int idx = kPrayerDisplayIdx[k];
                     if (_prayerTimeLabels[k]) {
                         int mm = ev.prayerMinutes[idx];
@@ -1088,7 +1308,8 @@ void UiScreens::onEvent(const UiEventPayload& ev) {
                         lv_label_set_text(_prayerTimeLabels[k], buf);
                     }
                     if (_prayerCards[k]) {
-                        bool highlight = (idx == ev.currentPrayerIndex || idx == ev.nextPrayerIndex);
+                        bool highlight = ev.prayerIsToday &&
+                            (idx == ev.currentPrayerIndex || idx == ev.nextPrayerIndex);
                         lv_obj_set_style_border_color(_prayerCards[k],
                             highlight ? UiTheme::kGold() : lv_color_hex(0x2A3547), 0);
                         lv_obj_set_style_border_width(_prayerCards[k], highlight ? 2 : 1, 0);

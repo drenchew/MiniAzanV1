@@ -78,7 +78,7 @@ private:
     void handleCancelBluetoothTransfer();
     void handleRequestSystemStatus();
     void handleRequestClock();
-    void handleRequestPrayer();
+    void handleRequestPrayer(int requestedYday = 0);
     void handleListAudioFiles();
     void handleListFolder(const char* path, uint8_t page, uint32_t requestId);
     void handleDeleteFile(const char* path);

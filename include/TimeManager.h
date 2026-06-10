@@ -24,7 +24,8 @@ public:
     enum class Source : uint8_t {
         None = 0,
         Rtc,
-        NtpFallback
+        NtpFallback,
+        Fallback
     };
 
     struct Config {
@@ -78,6 +79,7 @@ private:
     enum class NtpState : uint8_t { Idle, Waiting, Done, Failed };
 
     void logf(int level, const char* tag, const char* fmt, ...) const;
+    void seedFallbackClock();
     bool refreshRtcCache();
     void advanceCachedRtcByElapsed();
     bool buildPrayerNow(PrayerNow& out) const;

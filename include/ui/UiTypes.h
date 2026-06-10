@@ -94,6 +94,10 @@ struct UiCmdSetAzanIndex {
     uint8_t index;
 };
 
+struct UiCmdRequestPrayerTimes {
+    int yday = 0;  // 0 = today, otherwise 1-based day-of-year
+};
+
 struct UiCmdListFolder {
     char path[UI_PATH_MAX];
     uint8_t page;
@@ -160,6 +164,11 @@ struct UiEventPayload {
     char clockSource[8]{};
 
     uint16_t prayerMinutes[6]{};
+    int prayerYday = 0;
+    int prayerYear = 0;
+    int prayerMonth = 0;
+    int prayerMday = 0;
+    bool prayerIsToday = true;
     int currentPrayerIndex = -1;
     int nextPrayerIndex = -1;
     int nextPrayerMinutes = -1;
@@ -184,6 +193,7 @@ struct UiCommand {
     UiCmdSetVolume vol{};
     UiCmdSetPreFajr pf{};
     UiCmdSetAzanIndex az{};
+    UiCmdRequestPrayerTimes prayer{};
     UiCmdListFolder list{};
     UiCmdDeleteFile del{};
     UiCmdSelectAzanFile azanPath{};

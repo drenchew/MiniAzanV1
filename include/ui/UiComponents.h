@@ -11,7 +11,9 @@ struct UiStatusBarWidgets {
     lv_obj_t* bt = nullptr;
     lv_obj_t* timeSrc = nullptr;
     lv_obj_t* vol = nullptr;
+    lv_obj_t* sdGroup = nullptr;
     lv_obj_t* sd = nullptr;
+    lv_obj_t* rtcWarn = nullptr;
     lv_obj_t* batt = nullptr;
     uint8_t lastVolumePct = 0;
     bool sdKnown = false;

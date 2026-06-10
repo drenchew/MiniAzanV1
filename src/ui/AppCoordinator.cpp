@@ -5,12 +5,13 @@
 #include "system/BluetoothManager.h"
 #include "system/BluetoothTransferJob.h"
 #include "system/SchedPriority.h"
+#include <time.h>
 
 static void sdJobLogAdapter(int level, const char* tag, const char* msg) {
     appLog(level, tag, msg);
 }
 
-static const char* kPrayerNames[] = {"Fajr", "Sunrise", "Dhuhr", "Asr", "Maghrib", "Isha"};
+static const char* kPrayerNames[] = {"Fajr", "Duha", "Dhuhr", "Asr", "Maghrib", "Isha"};
 
 const char* AppCoordinator::prayerName(int idx) {
     if (idx < 0 || idx >= 6) return "?";
@@ -105,7 +106,7 @@ void AppCoordinator::dispatchCommand(const UiCommand& cmd) {
         case UiCmd::CancelBluetoothTransfer: handleCancelBluetoothTransfer(); break;
         case UiCmd::RequestSystemStatus: handleRequestSystemStatus(); break;
         case UiCmd::RequestClock: handleRequestClock(); break;
-        case UiCmd::RequestPrayerTimes: handleRequestPrayer(); break;
+        case UiCmd::RequestPrayerTimes: handleRequestPrayer(cmd.prayer.yday); break;
         case UiCmd::ListAudioFiles: handleListAudioFiles(); break;
         case UiCmd::ListFolder: handleListFolder(cmd.list.path, cmd.list.page, cmd.list.requestId); break;
         case UiCmd::RefreshFileList: handleListFolder("/azan", 0, 0); break;
@@ -227,46 +228,71 @@ void AppCoordinator::handleRequestClock() {
         else if (_svc.time->activeSource() == TimeManager::Source::NtpFallback) {
             strncpy(ev.clockSource, "NTP", sizeof(ev.clockSource) - 1);
         } else {
-            strncpy(ev.clockSource, "NONE", sizeof(ev.clockSource) - 1);
+            strncpy(ev.clockSource, "FALLBK", sizeof(ev.clockSource) - 1);
         }
+        ev.rtcOk = _svc.time->rtcUsable();
+        ev.rtcBatteryFail = !ev.rtcOk && _svc.time->activeSource() != TimeManager::Source::NtpFallback;
     }
     emit(ev);
 }
 
-void AppCoordinator::handleRequestPrayer() {
+void AppCoordinator::handleRequestPrayer(int requestedYday) {
     if (!_svc.readDayRecord) return;
     PrayerNow now{};
     if (!_svc.time || !_svc.time->getPrayerNow(now) || !now.valid) return;
 
-    DayRecord rec{};
-    if (!_svc.readDayRecord(now.yday, rec)) return;
+    int targetYday = requestedYday > 0 ? requestedYday : now.yday;
+    if (targetYday < 1) targetYday = 1;
+    if (targetYday > 366) targetYday = 366;
+    const bool isToday = (targetYday == now.yday);
 
-    if (_svc.cachedPrayerTimes) *_svc.cachedPrayerTimes = rec;
-    if (_svc.cachedPrayerDay) *_svc.cachedPrayerDay = now.yday;
-    if (_svc.cachedPrayerTimesValid) *_svc.cachedPrayerTimesValid = true;
+    DayRecord rec{};
+    if (!_svc.readDayRecord(targetYday, rec)) return;
+
+    if (isToday) {
+        if (_svc.cachedPrayerTimes) *_svc.cachedPrayerTimes = rec;
+        if (_svc.cachedPrayerDay) *_svc.cachedPrayerDay = targetYday;
+        if (_svc.cachedPrayerTimesValid) *_svc.cachedPrayerTimesValid = true;
+    }
 
     int nowMin = now.totalMinutes;
     UiEventPayload ev{};
     ev.type = UiEvent::PrayerTimesUpdate;
     for (int i = 0; i < 6; i++) ev.prayerMinutes[i] = rec.times[i];
+    ev.prayerYday = targetYday;
+    ev.prayerIsToday = isToday;
+
+    struct tm selected{};
+    selected.tm_year = now.year - 1900;
+    selected.tm_mon = 0;
+    selected.tm_mday = targetYday;
+    selected.tm_isdst = -1;
+    mktime(&selected);
+    ev.prayerYear = selected.tm_year + 1900;
+    ev.prayerMonth = selected.tm_mon + 1;
+    ev.prayerMday = selected.tm_mday;
 
     ev.currentPrayerIndex = -1;
-    for (int i = 0; i < 6; i++) {
-        if (i == 1) continue;
-        if (nowMin >= rec.times[i]) ev.currentPrayerIndex = i;
+    if (isToday) {
+        for (int i = 0; i < 6; i++) {
+            if (i == 1) continue;
+            if (nowMin >= rec.times[i]) ev.currentPrayerIndex = i;
+        }
     }
 
     ev.nextPrayerIndex = -1;
     ev.nextPrayerMinutes = -1;
     ev.secondsToNext = -1;
-    for (int i = 0; i < 6; i++) {
-        if (i == 1) continue;
-        if (rec.times[i] > nowMin) {
-            ev.nextPrayerIndex = i;
-            ev.nextPrayerMinutes = rec.times[i] - nowMin;
-            ev.secondsToNext = ev.nextPrayerMinutes * 60 - now.second;
-            if (ev.secondsToNext < 0) ev.secondsToNext = 0;
-            break;
+    if (isToday) {
+        for (int i = 0; i < 6; i++) {
+            if (i == 1) continue;
+            if (rec.times[i] > nowMin) {
+                ev.nextPrayerIndex = i;
+                ev.nextPrayerMinutes = rec.times[i] - nowMin;
+                ev.secondsToNext = ev.nextPrayerMinutes * 60 - now.second;
+                if (ev.secondsToNext < 0) ev.secondsToNext = 0;
+                break;
+            }
         }
     }
     if (ev.currentPrayerIndex >= 0) {
