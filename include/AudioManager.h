@@ -47,10 +47,11 @@ public:
 
 private:
     enum class CmdType : uint8_t { Play = 0, Stop, Pause, Resume, SetVolume };
+    static constexpr size_t kAudioPathMax = 96;
 
     struct Command {
         CmdType type = CmdType::Stop;
-        char path[64]{};
+        char path[kAudioPathMax]{};
         uint8_t volume = 0;
     };
 

@@ -27,9 +27,9 @@ public:
 
     struct Job {
         JobType type = JobType::ListDir;
-        char path[64]{"/"};
+        char path[UI_PATH_MAX]{"/"};
         uint8_t page = 0;
-        uint8_t pageSize = 16;
+        uint8_t pageSize = UI_FILE_PAGE_SIZE;
         uint32_t requestId = 0;
     };
 
@@ -38,13 +38,13 @@ public:
         StreamPhase phase = StreamPhase::Idle;
         uint32_t requestId = 0;
         bool ok = false;
-        char folder[64]{};
+        char folder[UI_PATH_MAX]{};
         uint8_t fileCount = 0;
         uint8_t listTotal = 0;
         uint8_t listPage = 0;
         UiFileEntry entry{};
-        UiFileEntry files[16]{};
-        char message[64]{};
+        UiFileEntry files[UI_FILE_PAGE_SIZE]{};
+        char message[UI_PATH_MAX]{};
     };
 
     using EmitFn = void (*)(const UiEventPayload& ev, void* user);
@@ -84,7 +84,7 @@ private:
     int _listCursor = 0;
     int _listTotal = 0;
     uint8_t _batchCount = 0;
-    UiFileEntry _batch[16]{};
+    UiFileEntry _batch[UI_FILE_PAGE_SIZE]{};
     uint32_t _nextId = 1;
     uint32_t _minValidRequestId = 1;
 };

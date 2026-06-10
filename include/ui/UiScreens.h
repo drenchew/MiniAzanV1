@@ -36,8 +36,10 @@ private:
 
     void requestDataForScreen(UiScreenId id);
     void requestFolderList(const char* path);
+    void requestFolderPage(const char* path, uint8_t page);
     bool isCurrentListResult(const UiEventPayload& ev) const;
     void populateFileList(const UiEventPayload& ev);
+    void updateQuranPager();
     void formatCountdown(char* buf, size_t len, int seconds);
 
     // ── Sun-path arc helpers ──────────────────────────────────────────────
@@ -70,7 +72,10 @@ private:
     lv_obj_t* _lblNowPlaying  = nullptr;
     lv_obj_t* _btnPauseResume = nullptr;
     lv_obj_t* _lblCurrentPath = nullptr;
+    lv_obj_t* _lblPageInfo    = nullptr;
     lv_obj_t* _btnUpFolder    = nullptr;
+    lv_obj_t* _btnPrevPage    = nullptr;
+    lv_obj_t* _btnNextPage    = nullptr;
 
     // ── Bluetooth screen ──────────────────────────────────────────────────
     lv_obj_t* _swTransfer    = nullptr;
@@ -87,15 +92,17 @@ private:
     UiScreenId _screen = UiScreenId::Home;
 
     // File browsing
-    char _listFolder[64]        = "/azan";
-    char _pendingDelete[64]{};
-    char _currentPlayingPath[72]{};
-    char _currentBrowsePath[64] = "/";
+    char _listFolder[UI_PATH_MAX] = "/azan";
+    char _pendingDelete[UI_PATH_MAX]{};
+    char _currentPlayingPath[UI_PATH_MAX]{};
+    char _currentBrowsePath[UI_PATH_MAX] = "/";
 
     // Async list request tracking
-    char     _activeListFolder[64] = "/";
+    char     _activeListFolder[UI_PATH_MAX] = "/";
     uint32_t _listRequestSeq       = 0;
     uint32_t _activeListRequestId  = 0;
+    uint8_t  _activeListPage       = 0;
+    uint8_t  _activeListTotal      = 0;
 
     // Audio state
     bool _isAudioPlaying = false;
@@ -109,12 +116,12 @@ private:
     uint32_t _lastRefreshMs = 0;
 
     // File path cache
-    char    _filePaths[16][72]{};
+    char    _filePaths[UI_FILE_PAGE_SIZE][UI_PATH_MAX]{};
     uint8_t _filePathCount = 0;
-    bool    _isFolder[16]{};
+    bool    _isFolder[UI_FILE_PAGE_SIZE]{};
 
     // Streaming list batch buffer
-    UiFileEntry _streamFiles[16]{};
+    UiFileEntry _streamFiles[UI_FILE_PAGE_SIZE]{};
     uint8_t     _streamCount = 0;
 };
 

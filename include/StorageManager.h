@@ -73,23 +73,6 @@ public:
     static void normalizePathTo(const char* path, char* out, size_t outLen);
 
 private:
-    /** Cache directory listing to avoid repeated slow SD scans. */
-    static constexpr int MAX_CACHE_ENTRIES = 256;
-    struct DirCache {
-        char path[80] = {};
-        DirEntry entries[MAX_CACHE_ENTRIES] = {};
-        int count = 0;
-        uint32_t timestamp = 0;
-    };
-    
-    DirCache _dirCache{};
-    
-    /** Load entire directory into cache. Returns count or -1 on error. */
-    int _loadDirectoryCache(const char* dirPath);
-    
-    /** Clear cache when navigating away or invalidating. */
-    void _clearCache();
-
     Config _cfg{};
     LogFn _log = nullptr;
     SemaphoreHandle_t _mutex = nullptr;

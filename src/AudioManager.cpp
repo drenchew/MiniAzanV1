@@ -10,6 +10,45 @@
 #define LOG_DEBUG 3
 #endif
 
+namespace {
+
+constexpr int kAudioInputBufferRamBytes = 8192;
+constexpr int kAudioInputBufferPsramBytes = 0;
+
+template<int N>
+struct AudioBufferPriority : AudioBufferPriority<N - 1> {};
+
+template<>
+struct AudioBufferPriority<0> {};
+
+template<typename T>
+auto configureAudioInputBuffer(T& audio, AudioBufferPriority<3>)
+    -> decltype(audio.setBufsize(kAudioInputBufferRamBytes, kAudioInputBufferPsramBytes), bool()) {
+    audio.setBufsize(kAudioInputBufferRamBytes, kAudioInputBufferPsramBytes);
+    return true;
+}
+
+template<typename T>
+auto configureAudioInputBuffer(T& audio, AudioBufferPriority<2>)
+    -> decltype(audio.setBufsize((size_t)kAudioInputBufferRamBytes), bool()) {
+    audio.setBufsize((size_t)kAudioInputBufferRamBytes);
+    return true;
+}
+
+template<typename T>
+auto configureAudioInputBuffer(T& audio, AudioBufferPriority<1>)
+    -> decltype(audio.setBufferSize((size_t)kAudioInputBufferRamBytes), bool()) {
+    audio.setBufferSize((size_t)kAudioInputBufferRamBytes);
+    return true;
+}
+
+template<typename T>
+bool configureAudioInputBuffer(T&, AudioBufferPriority<0>) {
+    return false;
+}
+
+}  // namespace
+
 void AudioManager::logf(int level, const char* tag, const char* fmt, ...) const {
     if (!_log) return;
     char buf[192];
@@ -32,8 +71,13 @@ bool AudioManager::begin(StorageManager& storage, const Config& cfg, LogFn logFn
         return false;
     }
 
+    const bool inputBufferConfigured =
+        configureAudioInputBuffer(_audio, AudioBufferPriority<3>{});
     _audio.setPinout(_cfg.pins.bclk, _cfg.pins.lrc, _cfg.pins.dout);
     _audio.setVolume(_cfg.defaultVolume);
+    logf(LOG_INFO, "AUDIO", "Input buffer %s at %d bytes",
+         inputBufferConfigured ? "capped" : "default",
+         kAudioInputBufferRamBytes);
 
     BaseType_t ok = xTaskCreatePinnedToCore(
         taskEntry,

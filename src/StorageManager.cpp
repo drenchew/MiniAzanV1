@@ -94,88 +94,6 @@ void StorageManager::normalizePathTo(const char* path, char* out, size_t outLen)
     out[outLen - 1] = '\0';
 }
 
-int StorageManager::_loadDirectoryCache(const char* dirPath) {
-    // Must already hold mutex
-    
-    char dir[256];
-    normalizePathTo(dirPath, dir, sizeof(dir));
-    
-    // If already cached for this path and cache is fresh (< 10 min), reuse it
-    if (_dirCache.count > 0 && 
-        strncmp(_dirCache.path, dir, sizeof(_dirCache.path) - 1) == 0 &&
-        (millis() - _dirCache.timestamp) < 600000) {  // 10 min TTL
-        return _dirCache.count;
-    }
-    
-    // New cache load: clear old and start fresh
-    _dirCache.count = 0;
-    strncpy(_dirCache.path, dir, sizeof(_dirCache.path) - 1);
-    _dirCache.path[sizeof(_dirCache.path) - 1] = '\0';
-    _dirCache.timestamp = millis();
-    
-    File root = SD.open(dir);
-    if (!root || !root.isDirectory()) {
-        if (root) {
-            root.close();
-        }
-        _dirCache.count = 0;
-        return 0;
-    }
-    
-    // Single-pass scan: filter only directories and .mp3 files
-    File file = root.openNextFile();
-    while (file && _dirCache.count < MAX_CACHE_ENTRIES) {
-        bool isDir = file.isDirectory();
-        bool isMp3 = false;
-        
-        if (!isDir) {
-            const char* name = file.name();
-            if (name) {
-                size_t len = strlen(name);
-                if (len > 4) {
-                    const char* ext = name + len - 4;
-                    isMp3 = (strcasecmp(ext, ".mp3") == 0);
-                }
-            }
-        }
-        
-        if (isDir || isMp3) {
-            DirEntry& entry = _dirCache.entries[_dirCache.count];
-            const char* full = file.name();
-            const char* base = full;
-            
-            // Extract basename from full path
-            if (full) {
-                const char* slash = strrchr(full, '/');
-                if (slash && slash[1]) {
-                    base = slash + 1;
-                }
-            } else {
-                base = "";
-            }
-            
-            strncpy(entry.name, base, sizeof(entry.name) - 1);
-            entry.name[sizeof(entry.name) - 1] = '\0';
-            entry.size = (uint32_t)file.size();
-            entry.isFolder = isDir;
-            _dirCache.count++;
-        }
-        
-        file.close();
-        file = root.openNextFile();
-    }
-    
-    root.close();
-    logf(LOG_INFO, "STORAGE", "Cached dir %s: %d entries", dir, _dirCache.count);
-    return _dirCache.count;
-}
-
-void StorageManager::_clearCache() {
-    _dirCache.count = 0;
-    _dirCache.path[0] = '\0';
-    _dirCache.timestamp = 0;
-}
-
 int StorageManager::listDirectoryPage(const char* dirPath, DirEntry* out, int maxEntries,
                                       int skip, int* totalOut) {
     if (!out || maxEntries <= 0 || !_ready) {
@@ -191,11 +109,18 @@ int StorageManager::listDirectoryPage(const char* dirPath, DirEntry* out, int ma
     // Initialize output
     for (int i = 0; i < maxEntries; i++) {
         out[i].isFolder = false;
+        out[i].name[0] = '\0';
+        out[i].size = 0;
     }
 
-    // Load (or reuse cached) directory contents
-    int totalCount = _loadDirectoryCache(dirPath);
-    if (totalCount <= 0) {
+    char dir[256];
+    normalizePathTo(dirPath, dir, sizeof(dir));
+
+    File root = SD.open(dir);
+    if (!root || !root.isDirectory()) {
+        if (root) {
+            root.close();
+        }
         giveLock();
         if (totalOut) {
             *totalOut = 0;
@@ -203,18 +128,54 @@ int StorageManager::listDirectoryPage(const char* dirPath, DirEntry* out, int ma
         return 0;
     }
 
-    // Serve pagination from cache
+    int totalCount = 0;
     int filled = 0;
-    for (int i = skip; i < totalCount && filled < maxEntries; i++) {
-        out[filled] = _dirCache.entries[i];
-        filled++;
+    File file = root.openNextFile();
+    while (file) {
+        const bool isDir = file.isDirectory();
+        bool isMp3 = false;
+
+        if (!isDir) {
+            const char* name = file.name();
+            if (name) {
+                const size_t len = strlen(name);
+                if (len > 4) {
+                    isMp3 = strcasecmp(name + len - 4, ".mp3") == 0;
+                }
+            }
+        }
+
+        if (isDir || isMp3) {
+            if (totalCount >= skip && filled < maxEntries) {
+                DirEntry& entry = out[filled];
+                const char* full = file.name();
+                const char* base = full ? full : "";
+                const char* slash = strrchr(base, '/');
+                if (slash && slash[1]) {
+                    base = slash + 1;
+                }
+
+                strncpy(entry.name, base, sizeof(entry.name) - 1);
+                entry.name[sizeof(entry.name) - 1] = '\0';
+                entry.size = (uint32_t)file.size();
+                entry.isFolder = isDir;
+                filled++;
+            }
+            totalCount++;
+        }
+
+        file.close();
+        file = root.openNextFile();
     }
 
+    root.close();
     giveLock();
 
     if (totalOut) {
         *totalOut = totalCount;
     }
+    logf(LOG_INFO, "STORAGE", "Listed page dir=%s skip=%d max=%d filled=%d total=%d",
+         dir, skip, maxEntries, filled, totalCount);
     return filled;
 }
 

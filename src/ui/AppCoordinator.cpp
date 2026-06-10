@@ -392,7 +392,7 @@ void AppCoordinator::handleListFolder(const char* path, uint8_t page, uint32_t r
     job.type = StorageJobQueue::JobType::ListDir;
     strncpy(job.path, path && path[0] ? path : "/", sizeof(job.path) - 1);
     job.page = page;
-    job.pageSize = 16;
+    job.pageSize = UI_FILE_PAGE_SIZE;
     job.requestId = requestId ? requestId : _nextInternalListRequestId++;
     if (_svc.storageJobs) {
         _svc.storageJobs->invalidateBefore(job.requestId);

@@ -140,10 +140,16 @@ bool StorageJobQueue::tickList() {
     }
 
     if (_phase == StreamPhase::ListEntry) {
-        StorageManager::DirEntry ent{};
-        const int rc = _storage->listNextFile(_active.path, _listCursor, ent, &_listTotal);
+        StorageManager::DirEntry pageEntries[UI_FILE_PAGE_SIZE]{};
+        uint8_t pageSize = _active.pageSize;
+        if (pageSize == 0 || pageSize > UI_FILE_PAGE_SIZE) {
+            pageSize = UI_FILE_PAGE_SIZE;
+        }
+        const int skip = (int)_active.page * (int)pageSize;
+        const int rc = _storage->listDirectoryPage(
+            _active.path, pageEntries, pageSize, skip, &_listTotal);
 
-        if (rc == -2) {
+        if (rc < 0 && !AzanSafeMode::allowStorageJobs()) {
             _phase = StreamPhase::Paused;
             logf(2, "list paused id=%lu (azan)", (unsigned long)_active.requestId);
             return true;
@@ -152,26 +158,17 @@ bool StorageJobQueue::tickList() {
             finishList(false);
             return false;
         }
-        if (rc == 0) {
-            finishList(true);
-            return false;
-        }
 
-        JobResult res{};
-        res.type = JobType::ListDir;
-        res.phase = StreamPhase::ListEntry;
-        res.requestId = _active.requestId;
-        res.ok = true;
-        strncpy(res.folder, _active.path, sizeof(res.folder) - 1);
-        strncpy(res.entry.name, ent.name, sizeof(res.entry.name) - 1);
-        res.entry.size = ent.size;
-        res.entry.isFolder = ent.isFolder;
-        pushResult(res);
-
-        if (_batchCount < 16) {
-            _batch[_batchCount++] = res.entry;
+        _batchCount = 0;
+        for (int i = 0; i < rc && i < UI_FILE_PAGE_SIZE; i++) {
+            UiFileEntry& dst = _batch[_batchCount++];
+            strncpy(dst.name, pageEntries[i].name, sizeof(dst.name) - 1);
+            dst.name[sizeof(dst.name) - 1] = '\0';
+            dst.size = pageEntries[i].size;
+            dst.isFolder = pageEntries[i].isFolder;
         }
-        return true;
+        finishList(true);
+        return false;
     }
 
     if (_phase == StreamPhase::Paused) {
@@ -195,7 +192,7 @@ void StorageJobQueue::finishList(bool ok) {
     res.fileCount = _batchCount;
     res.listTotal = (uint8_t)(_listTotal > 255 ? 255 : _listTotal);
     res.listPage = _active.page;
-    for (uint8_t i = 0; i < _batchCount; i++) {
+    for (uint8_t i = 0; i < _batchCount && i < UI_FILE_PAGE_SIZE; i++) {
         res.files[i] = _batch[i];
     }
     
@@ -334,7 +331,7 @@ void StorageJobQueue::poll() {
                 ev.listTotal = res.listTotal;
                 ev.listPage = res.listPage;
                 strncpy(ev.listFolder, res.folder, sizeof(ev.listFolder) - 1);
-                for (uint8_t i = 0; i < res.fileCount && i < 16; i++) {
+                for (uint8_t i = 0; i < res.fileCount && i < UI_FILE_PAGE_SIZE; i++) {
                     ev.files[i] = res.files[i];
                 }
                 

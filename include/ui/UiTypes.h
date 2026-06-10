@@ -2,6 +2,10 @@
 
 #include <Arduino.h>
 
+constexpr size_t UI_PATH_MAX = 96;
+constexpr size_t UI_FILE_NAME_MAX = 48;
+constexpr uint8_t UI_FILE_PAGE_SIZE = 16;
+
 /** UI → system (posted from LVGL task only). */
 enum class UiCmd : uint8_t {
     None = 0,
@@ -91,21 +95,21 @@ struct UiCmdSetAzanIndex {
 };
 
 struct UiCmdListFolder {
-    char path[64];
+    char path[UI_PATH_MAX];
     uint8_t page;
     uint32_t requestId;
 };
 
 struct UiCmdDeleteFile {
-    char path[64];
+    char path[UI_PATH_MAX];
 };
 
 struct UiCmdSelectAzanFile {
-    char path[64];
+    char path[UI_PATH_MAX];
 };
 
 struct UiCmdPlayFile {
-    char path[64];
+    char path[UI_PATH_MAX];
 };
 
 struct UiCmdSetBluetoothStreamVolume {
@@ -113,7 +117,7 @@ struct UiCmdSetBluetoothStreamVolume {
 };
 
 struct UiFileEntry {
-    char name[48];
+    char name[UI_FILE_NAME_MAX];
     uint32_t size = 0;
     bool isFolder = false;
 };
@@ -164,12 +168,12 @@ struct UiEventPayload {
     char nextPrayerName[16]{};
 
     uint8_t fileCount = 0;
-    UiFileEntry files[16];
-    char listFolder[64]{};
+    UiFileEntry files[UI_FILE_PAGE_SIZE];
+    char listFolder[UI_PATH_MAX]{};
     uint8_t listPage = 0;
     uint8_t listTotal = 0;
     uint32_t listRequestId = 0;
-    char defaultAzanPath[64]{};
+    char defaultAzanPath[UI_PATH_MAX]{};
 
     char message[64]{};
 };

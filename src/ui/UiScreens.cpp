@@ -65,7 +65,7 @@ void UiScreens::lvCbBtn(lv_event_t* e) {
     // op=5  Up / parent-directory in QuranPlayer
     if (op == 5) {
         if (g_active->_screen == UiScreenId::QuranPlayer) {
-            char parent[64] = "/";
+            char parent[UI_PATH_MAX] = "/";
             const char* path = g_active->_currentBrowsePath;
             if (path && path[0] == '/' && path[1]) {
                 const char* last = strrchr(path, '/');
@@ -76,6 +76,22 @@ void UiScreens::lvCbBtn(lv_event_t* e) {
                 }
             }
             g_active->requestFolderList(parent);
+        }
+        return;
+    }
+    // op=8/9  QuranPlayer previous / next page
+    if (op == 8 || op == 9) {
+        if (g_active->_screen == UiScreenId::QuranPlayer) {
+            const uint8_t lastPage = g_active->_activeListTotal == 0
+                ? 0
+                : (uint8_t)((g_active->_activeListTotal - 1) / UI_FILE_PAGE_SIZE);
+            if (op == 8 && g_active->_activeListPage > 0) {
+                g_active->requestFolderPage(g_active->_currentBrowsePath,
+                                            g_active->_activeListPage - 1);
+            } else if (op == 9 && g_active->_activeListPage < lastPage) {
+                g_active->requestFolderPage(g_active->_currentBrowsePath,
+                                            g_active->_activeListPage + 1);
+            }
         }
         return;
     }
@@ -163,6 +179,7 @@ void UiScreens::rebuildShell(UiScreenId id) {
     _btnStopAzan = nullptr;
     _barProgress = _sliderVol = _swPreFajr = nullptr;
     _listFiles = _swTransfer = _lblSystem = _barBtProgress = _scroll = nullptr;
+    _lblPageInfo = _btnPrevPage = _btnNextPage = nullptr;
     _lblNowPlaying = _btnPauseResume = _lblCurrentPath = _btnUpFolder = nullptr;
     _filePathCount = 0;
     for (int i = 0; i < 5; i++) {
@@ -654,11 +671,11 @@ void UiScreens::buildQuranPlayer(lv_obj_t* area) {
 
     lv_obj_t* info = lv_obj_create(area);
     lv_obj_set_pos(info, 8, y0 + 2);
-    lv_obj_set_size(info, 224, 58);
+    lv_obj_set_size(info, 224, 72);
     UiTheme::styleTransparent(info);
     lv_obj_set_flex_flow(info, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(info, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-    lv_obj_set_style_pad_row(info, 4, 0);
+    lv_obj_set_style_pad_row(info, 2, 0);
 
     // Current path
     _lblCurrentPath = lv_label_create(info);
@@ -678,8 +695,16 @@ void UiScreens::buildQuranPlayer(lv_obj_t* area) {
     lv_obj_set_style_text_font(_lblNowPlaying, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(_lblNowPlaying, UiTheme::kGold(), 0);
 
+    _lblPageInfo = lv_label_create(info);
+    lv_label_set_text(_lblPageInfo, "Page 1");
+    lv_label_set_long_mode(_lblPageInfo, LV_LABEL_LONG_DOT);
+    lv_obj_set_width(_lblPageInfo, 220);
+    lv_obj_set_height(_lblPageInfo, 16);
+    lv_obj_set_style_text_font(_lblPageInfo, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(_lblPageInfo, UiTheme::kMuted(), 0);
+
     // File list
-    lv_coord_t listY = y0 + 64;
+    lv_coord_t listY = y0 + 78;
     lv_coord_t listH = lv_obj_get_height(area) - listY - 40;
     _listFiles = lv_list_create(area);
     lv_obj_set_pos(_listFiles, 0, listY);
@@ -697,12 +722,21 @@ void UiScreens::buildQuranPlayer(lv_obj_t* area) {
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     _btnUpFolder = lv_btn_create(row);
+    lv_obj_set_size(_btnUpFolder, 34, 34);
     lv_obj_set_style_bg_color(_btnUpFolder, UiTheme::kCard(), 0);
     lv_label_set_text(lv_label_create(_btnUpFolder), LV_SYMBOL_UP);
     lv_obj_center(lv_obj_get_child(_btnUpFolder, 0));
     lv_obj_add_event_cb(_btnUpFolder, lvCbBtn, LV_EVENT_CLICKED, (void*)btnTag(5));
 
+    _btnPrevPage = lv_btn_create(row);
+    lv_obj_set_size(_btnPrevPage, 34, 34);
+    lv_obj_set_style_bg_color(_btnPrevPage, UiTheme::kCard(), 0);
+    lv_label_set_text(lv_label_create(_btnPrevPage), "<");
+    lv_obj_center(lv_obj_get_child(_btnPrevPage, 0));
+    lv_obj_add_event_cb(_btnPrevPage, lvCbBtn, LV_EVENT_CLICKED, (void*)btnTag(8));
+
     _btnPauseResume = lv_btn_create(row);
+    lv_obj_set_size(_btnPauseResume, 34, 34);
     lv_obj_set_style_bg_color(_btnPauseResume, UiTheme::kCard(), 0);
     lv_label_set_text(lv_label_create(_btnPauseResume), LV_SYMBOL_PAUSE);
     lv_obj_center(lv_obj_get_child(_btnPauseResume, 0));
@@ -716,11 +750,21 @@ void UiScreens::buildQuranPlayer(lv_obj_t* area) {
         lv_obj_add_state(_btnPauseResume, LV_STATE_DISABLED);
     }
 
+    _btnNextPage = lv_btn_create(row);
+    lv_obj_set_size(_btnNextPage, 34, 34);
+    lv_obj_set_style_bg_color(_btnNextPage, UiTheme::kCard(), 0);
+    lv_label_set_text(lv_label_create(_btnNextPage), ">");
+    lv_obj_center(lv_obj_get_child(_btnNextPage, 0));
+    lv_obj_add_event_cb(_btnNextPage, lvCbBtn, LV_EVENT_CLICKED, (void*)btnTag(9));
+
     lv_obj_t* stop = lv_btn_create(row);
+    lv_obj_set_size(stop, 34, 34);
     lv_obj_set_style_bg_color(stop, UiTheme::kDanger(), 0);
     lv_label_set_text(lv_label_create(stop), LV_SYMBOL_STOP);
     lv_obj_center(lv_obj_get_child(stop, 0));
     lv_obj_add_event_cb(stop, lvCbBtn, LV_EVENT_CLICKED, (void*)btnTag(2));
+
+    updateQuranPager();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -798,10 +842,15 @@ void UiScreens::buildSystem(lv_obj_t* area) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void UiScreens::requestFolderList(const char* path) {
+    requestFolderPage(path, 0);
+}
+
+void UiScreens::requestFolderPage(const char* path, uint8_t page) {
     const char* folder = (path && path[0]) ? path : "/";
     _listRequestSeq++;
     if (_listRequestSeq == 0) _listRequestSeq = 1;
     _activeListRequestId = _listRequestSeq;
+    _activeListPage = page;
     strncpy(_activeListFolder, folder, sizeof(_activeListFolder) - 1);
     _activeListFolder[sizeof(_activeListFolder) - 1] = '\0';
 
@@ -812,6 +861,11 @@ void UiScreens::requestFolderList(const char* path) {
             char pb[80];
             snprintf(pb, sizeof(pb), "Path: %s", _currentBrowsePath);
             lv_label_set_text(_lblCurrentPath, pb);
+        }
+        if (_lblPageInfo) {
+            char pageBuf[32];
+            snprintf(pageBuf, sizeof(pageBuf), "Loading page %u...", (unsigned)page + 1);
+            lv_label_set_text(_lblPageInfo, pageBuf);
         }
     } else {
         strncpy(_listFolder, folder, sizeof(_listFolder) - 1);
@@ -825,7 +879,7 @@ void UiScreens::requestFolderList(const char* path) {
     UiCommand c{};
     c.cmd          = UiCmd::ListFolder;
     strncpy(c.list.path, folder, sizeof(c.list.path) - 1);
-    c.list.page      = 0;
+    c.list.page      = page;
     c.list.requestId = _activeListRequestId;
     sendCmd(c);
 }
@@ -846,6 +900,38 @@ void UiScreens::formatCountdown(char* buf, size_t len, int seconds) {
     snprintf(buf, len, "%02d:%02d:%02d", h, m, s);
 }
 
+void UiScreens::updateQuranPager() {
+    if (_screen != UiScreenId::QuranPlayer) {
+        return;
+    }
+
+    const uint8_t lastPage = _activeListTotal == 0
+        ? 0
+        : (uint8_t)((_activeListTotal - 1) / UI_FILE_PAGE_SIZE);
+
+    if (_lblPageInfo) {
+        char pageBuf[40];
+        if (_activeListTotal == 0) {
+            snprintf(pageBuf, sizeof(pageBuf), "Page %u", (unsigned)_activeListPage + 1);
+        } else {
+            snprintf(pageBuf, sizeof(pageBuf), "Page %u/%u  (%u files)",
+                     (unsigned)_activeListPage + 1,
+                     (unsigned)lastPage + 1,
+                     (unsigned)_activeListTotal);
+        }
+        lv_label_set_text(_lblPageInfo, pageBuf);
+    }
+
+    if (_btnPrevPage) {
+        if (_activeListPage == 0) lv_obj_add_state(_btnPrevPage, LV_STATE_DISABLED);
+        else                      lv_obj_clear_state(_btnPrevPage, LV_STATE_DISABLED);
+    }
+    if (_btnNextPage) {
+        if (_activeListPage >= lastPage) lv_obj_add_state(_btnNextPage, LV_STATE_DISABLED);
+        else                             lv_obj_clear_state(_btnNextPage, LV_STATE_DISABLED);
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // populateFileList – fills _listFiles widget from a FileListReady event
 // ─────────────────────────────────────────────────────────────────────────────
@@ -858,21 +944,26 @@ void UiScreens::populateFileList(const UiEventPayload& ev) {
     }
     if (!_listFiles) return;
 
-    appLogf(2, "UI", "populateFileList: %d files in %s", ev.fileCount,
+    appLogf(2, "UI", "populateFileList: page=%u files=%d total=%u in %s",
+            (unsigned)ev.listPage, ev.fileCount, (unsigned)ev.listTotal,
             ev.listFolder[0] ? ev.listFolder : _listFolder);
 
     lv_obj_clean(_listFiles);
-    _filePathCount = ev.fileCount > 16 ? 16 : ev.fileCount;
+    _filePathCount = ev.fileCount > UI_FILE_PAGE_SIZE ? UI_FILE_PAGE_SIZE : ev.fileCount;
+    _activeListPage = ev.listPage;
+    _activeListTotal = ev.listTotal;
 
     const char* folder = ev.listFolder[0] ? ev.listFolder : _listFolder;
 
     if (_screen == UiScreenId::QuranPlayer) {
         strncpy(_currentBrowsePath, folder, sizeof(_currentBrowsePath) - 1);
+        _currentBrowsePath[sizeof(_currentBrowsePath) - 1] = '\0';
         if (_lblCurrentPath) {
             char pb[80];
             snprintf(pb, sizeof(pb), "Path: %s", folder);
             lv_label_set_text(_lblCurrentPath, pb);
         }
+        updateQuranPager();
     }
 
     for (uint8_t i = 0; i < _filePathCount; i++) {
@@ -941,7 +1032,7 @@ void UiScreens::populateFileList(const UiEventPayload& ev) {
     }
 
     lv_obj_invalidate(_listFiles);
-    appLogf(2, "UI", "populateFileList done: %d entries", _filePathCount);
+    appLogf(2, "UI", "populateFileList done: %d page entries", _filePathCount);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1056,7 +1147,7 @@ void UiScreens::onEvent(const UiEventPayload& ev) {
 
         case UiEvent::FileListStreamEntry:
             if (!isCurrentListResult(ev)) break;
-            if (_streamCount < 16 && ev.fileCount > 0)
+            if (_streamCount < UI_FILE_PAGE_SIZE && ev.fileCount > 0)
                 _streamFiles[_streamCount++] = ev.files[0];
             break;
 
