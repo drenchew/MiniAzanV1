@@ -1,4 +1,5 @@
 #include "UIManager.h"
+#include "AppLog.h"
 
 #if defined(MINI_AZAN_UI_ENABLE) && MINI_AZAN_UI_ENABLE
 #include "ui/UiPanel.h"
@@ -39,10 +40,22 @@ bool UIManager::begin(UiBridge& bridge, const Config& cfg) {
         &_task,
         _cfg.taskCore);
 
-    if (ok != pdPASS) return false;
+    if (ok != pdPASS) {
+        appLogf(APP_LOG_ERROR, "UI",
+                "LVGL task create failed stack=%lu core=%d prio=%u",
+                (unsigned long)_cfg.taskStackWords,
+                (int)_cfg.taskCore,
+                (unsigned)_cfg.taskPriority);
+        return false;
+    }
 
     _running = true;
     _nav.reset(UiScreenId::Home);
+    appLogf(APP_LOG_INFO, "UI",
+            "LVGL task ok stack=%lu core=%d prio=%u",
+            (unsigned long)_cfg.taskStackWords,
+            (int)_cfg.taskCore,
+            (unsigned)_cfg.taskPriority);
     return true;
 #endif
 }
@@ -53,7 +66,9 @@ void UIManager::poll() {
 
 void UIManager::taskLoop() {
 #if MINI_AZAN_UI_ENABLE
+    appLog(APP_LOG_INFO, "UI", "LVGL task start");
     _screens.begin(*_bridge, _nav);
+    appLog(APP_LOG_INFO, "UI", "LVGL home screen built");
 
     while (true) {
         _screens.tickRefresh();

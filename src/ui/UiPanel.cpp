@@ -37,6 +37,8 @@ bool UiPanel::begin(int width, int height) {
     _tft.init();
     _tft.setRotation(0);
     _tft.fillScreen(TFT_BLACK);
+    _tft.fillRect(0, 0, 24, 24, TFT_GREEN);
+    _tft.drawString("UI", 2, 6, 2);
     SpiArch::releaseTftChipSelect();
     appLog(APP_LOG_INFO, "UI", "tft_init done tft_cs=released");
 
@@ -97,7 +99,7 @@ bool UiPanel::begin(int width, int height) {
     appLogf(APP_LOG_INFO, "UI",
             "lvgl draw bufs: A=0x%08x  B=0x%08x  px=%u  (static BSS, no heap)",
             (unsigned)reinterpret_cast<uintptr_t>(_buf1),
-            //(unsigned)reinterpret_cast<uintptr_t>(_buf2),
+            0U,
             (unsigned)bufPixels);
 
     lv_disp_drv_init(&_dispDrv);
@@ -135,6 +137,14 @@ void UiPanel::flushCb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* col
     TFT_eSPI& tft = instance()._tft;
     uint32_t w = (uint32_t)(area->x2 - area->x1 + 1);
     uint32_t h = (uint32_t)(area->y2 - area->y1 + 1);
+    static bool s_loggedFirstFlush = false;
+    if (!s_loggedFirstFlush) {
+        s_loggedFirstFlush = true;
+        appLogf(APP_LOG_INFO, "UI",
+                "LVGL first flush x=%d y=%d w=%lu h=%lu",
+                (int)area->x1, (int)area->y1,
+                (unsigned long)w, (unsigned long)h);
+    }
     SpiArch::releaseTftChipSelect();
     tft.startWrite();
     tft.setAddrWindow(area->x1, area->y1, w, h);

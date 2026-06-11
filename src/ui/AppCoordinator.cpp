@@ -115,6 +115,8 @@ void AppCoordinator::dispatchCommand(const UiCommand& cmd) {
         case UiCmd::PlayFile: handlePlayFile(cmd.play.path); break;
         case UiCmd::PauseAudio: handlePauseAudio(); break;
         case UiCmd::ResumeAudio: handleResumeAudio(); break;
+        case UiCmd::ToggleBluetoothStreaming: handleToggleBluetoothStreaming(); break;
+        case UiCmd::SetBluetoothStreamVolume: handleSetBluetoothStreamVolume(cmd.btStreamVol.volumePct); break;
         default: break;
     }
 }
@@ -190,7 +192,7 @@ void AppCoordinator::handleAzanIndex(uint8_t idx) {
 
 void AppCoordinator::handleToggleTransferMode() {
     if (!_svc.bluetooth) return;
-    bool next = !_svc.bluetooth->isEnabled();
+    bool next = !_svc.bluetooth->isEnabled() || _svc.bluetooth->isStreamingEnabled();
     if (next && AzanSafeMode::isActive()) {
         UiEventPayload ev{};
         ev.type = UiEvent::CmdResult;
@@ -203,6 +205,47 @@ void AppCoordinator::handleToggleTransferMode() {
     _svc.bluetooth->requestTransferMode(next);
     handleRequestBluetoothStatus();
     handleRequestSystemStatus();
+}
+
+void AppCoordinator::handleToggleBluetoothStreaming() {
+    if (!_svc.bluetooth) return;
+    const bool next = !_svc.bluetooth->isStreamingEnabled();
+    if (next && AzanSafeMode::isActive()) {
+        UiEventPayload ev{};
+        ev.type = UiEvent::CmdResult;
+        ev.result = UiResult::Rejected;
+        strncpy(ev.message, "Azan playing", sizeof(ev.message) - 1);
+        emit(ev);
+        handleRequestBluetoothStatus();
+        return;
+    }
+    if (next && _svc.audio) {
+        _svc.audio->requestStop();
+        if (_svc.isAudioPlaying) *_svc.isAudioPlaying = false;
+        if (_svc.isAzanPlaying) *_svc.isAzanPlaying = false;
+        UiEventPayload ev{};
+        ev.type = UiEvent::AudioState;
+        ev.audioPlaying = false;
+        ev.audioPaused = false;
+        ev.azanPlaying = false;
+        emit(ev);
+    }
+    const bool ok = _svc.bluetooth->requestStreamingMode(next);
+    if (!ok) {
+        UiEventPayload ev{};
+        ev.type = UiEvent::CmdResult;
+        ev.result = UiResult::Rejected;
+        strncpy(ev.message, "Bluetooth busy", sizeof(ev.message) - 1);
+        emit(ev);
+    }
+    handleRequestBluetoothStatus();
+    handleRequestSystemStatus();
+}
+
+void AppCoordinator::handleSetBluetoothStreamVolume(uint8_t pct) {
+    if (!_svc.bluetooth) return;
+    _svc.bluetooth->requestSetStreamVolume(pct);
+    handleRequestBluetoothStatus();
 }
 
 void AppCoordinator::handleCancelBluetoothTransfer() {
@@ -329,7 +372,7 @@ void AppCoordinator::handleRequestSystemStatus() {
         strncpy(ev.defaultAzanPath, _svc.azanFiles[*_svc.currentAzanIndex], sizeof(ev.defaultAzanPath) - 1);
     }
     if (_svc.bluetooth) {
-        ev.btEnabled = _svc.bluetooth->isEnabled();
+        ev.btEnabled = _svc.bluetooth->isEnabled() && !_svc.bluetooth->isStreamingEnabled();
         ev.btConnected = _svc.bluetooth->isConnected();
         ev.btTransferActive = _svc.bluetooth->isTransferActive();
         ev.btProgressPct = _svc.bluetooth->activeJob().progressPct;
@@ -465,6 +508,9 @@ void AppCoordinator::handleRequestBluetoothStatus() {
         ev.btEnabled = _svc.bluetooth->isEnabled();
         ev.btConnected = _svc.bluetooth->isConnected();
         ev.btTransferActive = _svc.bluetooth->isTransferActive();
+        ev.btStreamingEnabled = _svc.bluetooth->isStreamingEnabled();
+        ev.btStreamingActive = _svc.bluetooth->isStreamingActive();
+        ev.btStreamVolume = _svc.bluetooth->streamVolumePct();
         const BluetoothTransferJob& job = _svc.bluetooth->activeJob();
         ev.btProgressPct = job.progressPct;
         switch (job.phase) {

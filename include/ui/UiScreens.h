@@ -95,6 +95,9 @@ private:
     lv_obj_t* _btnNextPage    = nullptr;
 
     // ── Bluetooth screen ──────────────────────────────────────────────────
+    lv_obj_t* _swBtStream    = nullptr;
+    lv_obj_t* _sliderBtStreamVol = nullptr;
+    lv_obj_t* _lblBtStream   = nullptr;
     lv_obj_t* _swTransfer    = nullptr;
     lv_obj_t* _barBtProgress = nullptr;
     lv_obj_t* _lblSystem     = nullptr;

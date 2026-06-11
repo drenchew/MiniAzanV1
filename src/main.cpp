@@ -318,7 +318,13 @@ void setup() {
 
     
     appLog(APP_LOG_INFO, "BOOT", "Initializing Bluetooth manager...");
-    bluetoothMgr.begin();
+    BluetoothManager::Config btCfg{};
+    btCfg.pins.bclk = I2S_BCLK;
+    btCfg.pins.lrc = I2S_LRC;
+    btCfg.pins.dout = I2S_DOUT;
+    btCfg.deviceName = "MiniAzan Speaker";
+    btCfg.defaultStreamVolume = 80;
+    bluetoothMgr.begin(btCfg);
     
     appLog(APP_LOG_INFO, "BOOT", "Initializing prayer scheduler...");
     PrayerScheduler::Config prayerCfg{};
@@ -333,19 +339,21 @@ void setup() {
     prayerHooks.preFajrEnabled = &preFajrEnabled;
     prayerHooks.lastPreFajrDay = &lastPreFajrDay;
     prayerSched.begin(timeMgr, storageMgr, prayerCfg, prayerHooks);
-    
-    appLog(APP_LOG_INFO, "BOOT", "Initializing system coordinator...");
-    SystemCoordinator::Config sysCoordCfg{};
-    sysCoord.begin(uiBridge, appCoord, timeMgr, prayerSched, bluetoothMgr, sysCoordCfg);
-    sysCoord.setIsAudioPlayingPtr(&isAudioPlaying);
-    
+
 #if !defined(MINI_AZAN_TOUCH_VALIDATION_MODE) || !MINI_AZAN_TOUCH_VALIDATION_MODE
     appLog(APP_LOG_INFO, "BOOT", "Initializing UI...");
-    uiMgr.begin(uiBridge);
+    if (!uiMgr.begin(uiBridge)) {
+        appLog(APP_LOG_ERROR, "BOOT", "UI initialization failed");
+    }
 #else
     appLog(APP_LOG_INFO, "BOOT", "Initializing touch validation overlay...");
     touchOverlay.begin();
 #endif
+
+    appLog(APP_LOG_INFO, "BOOT", "Initializing system coordinator...");
+    SystemCoordinator::Config sysCoordCfg{};
+    sysCoord.setIsAudioPlayingPtr(&isAudioPlaying);
+    sysCoord.begin(uiBridge, appCoord, timeMgr, prayerSched, bluetoothMgr, sysCoordCfg);
 
     appLog(APP_LOG_INFO, "BOOT", "=== Boot complete ===");
 }

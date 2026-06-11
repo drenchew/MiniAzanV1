@@ -18,7 +18,7 @@ public:
         int width = 240;
         int height = 320;
         UBaseType_t taskPriority = 1;
-        uint32_t taskStackWords = 12288;
+        uint32_t taskStackWords = 8192;
         BaseType_t taskCore = 1;
         uint32_t timerPeriodMs = 5;
     };

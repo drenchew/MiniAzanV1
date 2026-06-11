@@ -74,6 +74,8 @@ private:
     void handlePreFajr(bool on);
     void handleAzanIndex(uint8_t idx);
     void handleToggleTransferMode();
+    void handleToggleBluetoothStreaming();
+    void handleSetBluetoothStreamVolume(uint8_t pct);
     void handleRequestBluetoothStatus();
     void handleCancelBluetoothTransfer();
     void handleRequestSystemStatus();

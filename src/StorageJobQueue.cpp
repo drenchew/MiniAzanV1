@@ -302,20 +302,6 @@ void StorageJobQueue::poll() {
                 ev.files[0] = res.entry;
                 strncpy(ev.listFolder, res.folder, sizeof(ev.listFolder) - 1);
             } else if (res.phase == StreamPhase::ListEnd) {
-                // #region agent log
-                logf(2,
-                     "{\"sessionId\":\"36936e\",\"runId\":\"initial\",\"hypothesisId\":\"H2,H3\","
-                     "\"location\":\"StorageJobQueue.cpp:248\",\"message\":\"list end result before ui emit\","
-                     "\"data\":{\"requestId\":%lu,\"ok\":%d,\"fileCount\":%u,\"total\":%u,"
-                     "\"folder\":\"%s\",\"first\":\"%s\",\"firstFolder\":%d}}",
-                     (unsigned long)res.requestId,
-                     res.ok ? 1 : 0,
-                     (unsigned)res.fileCount,
-                     (unsigned)res.listTotal,
-                     res.folder,
-                     res.fileCount ? res.files[0].name : "",
-                     res.fileCount ? (res.files[0].isFolder ? 1 : 0) : -1);
-                // #endregion
                 UiEventPayload endEv{};
                 endEv.type = UiEvent::FileListStreamEnd;
                 endEv.result = res.ok ? UiResult::Ok : UiResult::Failed;

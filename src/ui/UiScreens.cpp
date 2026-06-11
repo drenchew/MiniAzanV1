@@ -219,6 +219,7 @@ void UiScreens::rebuildShell(UiScreenId id) {
     _barProgress = _sliderVol = _swPreFajr = nullptr;
     _lblPrayerDate = nullptr;
     _listFiles = _swTransfer = _lblSystem = _barBtProgress = _scroll = nullptr;
+    _swBtStream = _sliderBtStreamVol = _lblBtStream = nullptr;
     _lblPageInfo = _btnPrevPage = _btnNextPage = nullptr;
     _lblNowPlaying = _btnPauseResume = _lblCurrentPath = _btnUpFolder = nullptr;
     _filePathCount = 0;
@@ -987,24 +988,40 @@ void UiScreens::buildSystem(lv_obj_t* area) {
     lv_label_set_text(titleAudio, "Bluetooth Audio Streaming");
     lv_obj_set_style_text_color(titleAudio, UiTheme::kGold(), 0);
 
-    lv_obj_t* cardAudio = UiComponents::createCard(_scroll, 216, 100);
-    lv_obj_t* lblAudioDesc = lv_label_create(cardAudio);
-    lv_label_set_text(lblAudioDesc, "Stream audio from\nphone to speaker");
-    lv_obj_set_style_text_color(lblAudioDesc, UiTheme::kText(), 0);
-    lv_obj_set_width(lblAudioDesc, 200);
+    lv_obj_t* cardAudio = UiComponents::createCard(_scroll, 216, 126);
+    _lblBtStream = lv_label_create(cardAudio);
+    lv_label_set_text(_lblBtStream, "MiniAzan Speaker\nStatus: off");
+    lv_label_set_long_mode(_lblBtStream, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_color(_lblBtStream, UiTheme::kText(), 0);
+    lv_obj_set_width(_lblBtStream, 200);
 
     lv_obj_t* lblAudioSw = lv_label_create(cardAudio);
     lv_label_set_text(lblAudioSw, "Enable");
     lv_obj_set_style_text_color(lblAudioSw, UiTheme::kMuted(), 0);
     lv_obj_align(lblAudioSw, LV_ALIGN_BOTTOM_LEFT, 0, -8);
-    lv_obj_t* swAudio = lv_switch_create(cardAudio);
-    lv_obj_align(swAudio, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
-    lv_obj_add_event_cb(swAudio, [](lv_event_t* e) {
+    _swBtStream = lv_switch_create(cardAudio);
+    lv_obj_align(_swBtStream, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
+    lv_obj_add_event_cb(_swBtStream, [](lv_event_t* e) {
         if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
         UiCommand c{};
         c.cmd = UiCmd::ToggleBluetoothStreaming;
         if (g_active) g_active->sendCmd(c);
     }, LV_EVENT_VALUE_CHANGED, nullptr);
+
+    _sliderBtStreamVol = lv_slider_create(cardAudio);
+    lv_slider_set_range(_sliderBtStreamVol, 0, 100);
+    lv_slider_set_value(_sliderBtStreamVol, 80, LV_ANIM_OFF);
+    lv_obj_set_width(_sliderBtStreamVol, 190);
+    lv_obj_align(_sliderBtStreamVol, LV_ALIGN_BOTTOM_MID, 0, -34);
+    lv_obj_set_style_bg_color(_sliderBtStreamVol, UiTheme::kGold(), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(_sliderBtStreamVol, UiTheme::kGold(), LV_PART_KNOB);
+    lv_obj_add_event_cb(_sliderBtStreamVol, [](lv_event_t* e) {
+        if (lv_event_get_code(e) != LV_EVENT_RELEASED) return;
+        UiCommand c{};
+        c.cmd = UiCmd::SetBluetoothStreamVolume;
+        c.btStreamVol.volumePct = (uint8_t)lv_slider_get_value(lv_event_get_target(e));
+        if (g_active) g_active->sendCmd(c);
+    }, LV_EVENT_RELEASED, nullptr);
 
     // File transfer section
     lv_obj_t* titleXfer = lv_label_create(_scroll);
@@ -1319,6 +1336,18 @@ void UiScreens::onEvent(const UiEventPayload& ev) {
             break;
 
         case UiEvent::BluetoothStatus:
+            if (_swBtStream) {
+                if (ev.btStreamingEnabled) lv_obj_add_state(_swBtStream, LV_STATE_CHECKED);
+                else                       lv_obj_clear_state(_swBtStream, LV_STATE_CHECKED);
+            }
+            if (_sliderBtStreamVol)
+                lv_slider_set_value(_sliderBtStreamVol, ev.btStreamVolume, LV_ANIM_OFF);
+            if (_lblBtStream && _screen == UiScreenId::Bluetooth) {
+                snprintf(buf, sizeof(buf), "MiniAzan Speaker\n%s%s",
+                         ev.btStreamingEnabled ? "Pair from phone" : "Status: off",
+                         ev.btStreamingActive ? " - playing" : "");
+                lv_label_set_text(_lblBtStream, buf);
+            }
             if (_swTransfer) {
                 if (ev.btEnabled) lv_obj_add_state(_swTransfer, LV_STATE_CHECKED);
                 else              lv_obj_clear_state(_swTransfer, LV_STATE_CHECKED);

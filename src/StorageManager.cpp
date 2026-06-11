@@ -11,6 +11,42 @@
 static_assert(SpiArch::SD_HOST == VSPI, "SD card must use VSPI (bus 1) only");
 static_assert(SpiArch::UI_HOST == HSPI, "TFT/touch must use HSPI (bus 2) only");
 
+namespace {
+
+const char* baseNameOf(const char* path) {
+    if (!path) {
+        return "";
+    }
+    const char* slash = strrchr(path, '/');
+    return (slash && slash[1]) ? slash + 1 : path;
+}
+
+bool isSkippableDirectoryEntry(const char* base) {
+    if (!base || !base[0]) {
+        return true;
+    }
+    // print the name we are comapring
+    
+    if (strcmp(base, ".") == 0 || strcmp(base, "..") == 0) {
+        return true;
+    }
+    if (base[0] == '.') {
+        return true;
+    }
+    if (strcasecmp(base, "System Volume Information") == 0) {
+        return true;
+    }
+    if (strcasecmp(base, "$RECYCLE.BIN") == 0) {
+        return true;
+    }
+    if (strncasecmp(base, "FOUND.", 6) == 0) {
+        return true;
+    }
+    return false;
+}
+
+}  // namespace
+
 void StorageManager::logf(int level, const char* tag, const char* fmt, ...) const {
     if (!_log) return;
     char buf[192];
@@ -132,15 +168,25 @@ int StorageManager::listDirectoryPage(const char* dirPath, DirEntry* out, int ma
     int filled = 0;
     File file = root.openNextFile();
     while (file) {
+        const char* full = file.name();
+        const char* base = baseNameOf(full);
+        //print the name we are comapring
+        //Serial.println(base);
+        logf(LOG_DEBUG, "STORAGE", "Examining entry '%s' (full: '%s')", base, full);
+        if (isSkippableDirectoryEntry(base)) {
+            file.close();
+            file = root.openNextFile();
+            continue;
+        }
+
         const bool isDir = file.isDirectory();
         bool isMp3 = false;
 
         if (!isDir) {
-            const char* name = file.name();
-            if (name) {
-                const size_t len = strlen(name);
+            if (base) {
+                const size_t len = strlen(base);
                 if (len > 4) {
-                    isMp3 = strcasecmp(name + len - 4, ".mp3") == 0;
+                    isMp3 = strcasecmp(base + len - 4, ".mp3") == 0;
                 }
             }
         }
@@ -148,12 +194,6 @@ int StorageManager::listDirectoryPage(const char* dirPath, DirEntry* out, int ma
         if (isDir || isMp3) {
             if (totalCount >= skip && filled < maxEntries) {
                 DirEntry& entry = out[filled];
-                const char* full = file.name();
-                const char* base = full ? full : "";
-                const char* slash = strrchr(base, '/');
-                if (slash && slash[1]) {
-                    base = slash + 1;
-                }
 
                 strncpy(entry.name, base, sizeof(entry.name) - 1);
                 entry.name[sizeof(entry.name) - 1] = '\0';
