@@ -4,7 +4,7 @@
 
 constexpr size_t UI_PATH_MAX = 96;
 constexpr size_t UI_FILE_NAME_MAX = 48;
-constexpr uint8_t UI_FILE_PAGE_SIZE = 16;
+constexpr uint8_t UI_FILE_PAGE_SIZE = 4;
 
 /** UI → system (posted from LVGL task only). */
 enum class UiCmd : uint8_t {
@@ -122,6 +122,7 @@ struct UiCmdSetBluetoothStreamVolume {
 
 struct UiFileEntry {
     char name[UI_FILE_NAME_MAX];
+    char title[UI_FILE_NAME_MAX];
     uint32_t size = 0;
     bool isFolder = false;
 };
@@ -185,6 +186,7 @@ struct UiEventPayload {
     char defaultAzanPath[UI_PATH_MAX]{};
 
     char message[64]{};
+    char nowPlayingTitle[UI_FILE_NAME_MAX]{};
 };
 
 struct UiCommand {

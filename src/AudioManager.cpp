@@ -14,6 +14,9 @@ namespace {
 
 constexpr int kAudioInputBufferRamBytes = 8192;
 constexpr int kAudioInputBufferPsramBytes = 0;
+AudioManager* gAudioCallbackOwner = nullptr;
+AudioManager::MetadataFn gMetaCb = nullptr;
+void* gMetaUser = nullptr;
 
 template<int N>
 struct AudioBufferPriority : AudioBufferPriority<N - 1> {};
@@ -49,6 +52,23 @@ bool configureAudioInputBuffer(T&, AudioBufferPriority<0>) {
 
 }  // namespace
 
+void AudioManager::setMetadataCallback(MetadataFn fn, void* user) {
+    _metaCb = fn;
+    _metaUser = user;
+    gMetaCb = fn;
+    gMetaUser = user;
+}
+
+void audio_id3data(const char* info) {
+    if (!info || !gMetaCb) return;
+    if (strncmp(info, "Title:", 6) != 0) return;
+    const char* title = info + 6;
+    while (*title == ' ') title++;
+    if (title[0]) {
+        gMetaCb(title, gMetaUser);
+    }
+}
+
 void AudioManager::logf(int level, const char* tag, const char* fmt, ...) const {
     if (!_log) return;
     char buf[192];
@@ -63,6 +83,7 @@ bool AudioManager::begin(StorageManager& storage, const Config& cfg, LogFn logFn
     _cfg = cfg;
     _storage = &storage;
     _log = logFn;
+    gAudioCallbackOwner = this;
 
     if (!_cmdQ) {
         _cmdQ = xQueueCreate(4, sizeof(Command));

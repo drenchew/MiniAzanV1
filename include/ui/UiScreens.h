@@ -136,6 +136,7 @@ private:
 
     // File path cache
     char    _filePaths[UI_FILE_PAGE_SIZE][UI_PATH_MAX]{};
+    char    _fileDisplayNames[UI_FILE_PAGE_SIZE][UI_FILE_NAME_MAX]{};
     uint8_t _filePathCount = 0;
     bool    _isFolder[UI_FILE_PAGE_SIZE]{};
 

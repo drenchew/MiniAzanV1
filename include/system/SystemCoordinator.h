@@ -12,7 +12,7 @@ class SystemCoordinator {
 public:
     struct Config {
         UBaseType_t taskPriority = 3;
-        uint32_t taskStackWords = 8192;
+        uint32_t taskStackWords = 10240;
         BaseType_t taskCore = 1;
         uint32_t periodMs = 10;
     };

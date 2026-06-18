@@ -28,6 +28,13 @@ bool AppCoordinator::begin(UiBridge& bridge, const AppServices& svc) {
     if (_svc.storageJobs && _svc.storage) {
         _svc.storageJobs->begin(_svc.storage, storageEmitThunk, this, sdJobLogAdapter);
     }
+    if (_svc.audio) {
+        _svc.audio->setMetadataCallback(
+            [](const char* title, void* user) {
+                static_cast<AppCoordinator*>(user)->handleAudioTitle(title);
+            },
+            this);
+    }
     return _svc.audio && _svc.storage && _svc.time && _bridge;
 }
 
@@ -398,6 +405,17 @@ void AppCoordinator::handleResumeAudio() {
     ev.audioPlaying = true;
     ev.audioPaused = false;
     ev.azanPlaying = false;
+    emit(ev);
+}
+
+void AppCoordinator::handleAudioTitle(const char* title) {
+    if (!title || !title[0]) return;
+    UiEventPayload ev{};
+    ev.type = UiEvent::AudioState;
+    ev.audioPlaying = _svc.isAudioPlaying && *_svc.isAudioPlaying;
+    ev.audioPaused = _svc.audio && _svc.audio->isPausedFlag();
+    ev.azanPlaying = _svc.isAzanPlaying && *_svc.isAzanPlaying;
+    strncpy(ev.nowPlayingTitle, title, sizeof(ev.nowPlayingTitle) - 1);
     emit(ev);
 }
 

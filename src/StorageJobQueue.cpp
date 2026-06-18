@@ -140,14 +140,13 @@ bool StorageJobQueue::tickList() {
     }
 
     if (_phase == StreamPhase::ListEntry) {
-        StorageManager::DirEntry pageEntries[UI_FILE_PAGE_SIZE]{};
         uint8_t pageSize = _active.pageSize;
         if (pageSize == 0 || pageSize > UI_FILE_PAGE_SIZE) {
             pageSize = UI_FILE_PAGE_SIZE;
         }
         const int skip = (int)_active.page * (int)pageSize;
         const int rc = _storage->listDirectoryPage(
-            _active.path, pageEntries, pageSize, skip, &_listTotal);
+            _active.path, _pageEntries, pageSize, skip, &_listTotal);
 
         if (rc < 0 && !AzanSafeMode::allowStorageJobs()) {
             _phase = StreamPhase::Paused;
@@ -162,10 +161,12 @@ bool StorageJobQueue::tickList() {
         _batchCount = 0;
         for (int i = 0; i < rc && i < UI_FILE_PAGE_SIZE; i++) {
             UiFileEntry& dst = _batch[_batchCount++];
-            strncpy(dst.name, pageEntries[i].name, sizeof(dst.name) - 1);
+            strncpy(dst.name, _pageEntries[i].name, sizeof(dst.name) - 1);
             dst.name[sizeof(dst.name) - 1] = '\0';
-            dst.size = pageEntries[i].size;
-            dst.isFolder = pageEntries[i].isFolder;
+            strncpy(dst.title, _pageEntries[i].title, sizeof(dst.title) - 1);
+            dst.title[sizeof(dst.title) - 1] = '\0';
+            dst.size = _pageEntries[i].size;
+            dst.isFolder = _pageEntries[i].isFolder;
         }
         finishList(true);
         return false;
@@ -183,7 +184,8 @@ bool StorageJobQueue::tickList() {
 }
 
 void StorageJobQueue::finishList(bool ok) {
-    JobResult res{};
+    _jobScratch = JobResult{};
+    JobResult& res = _jobScratch;
     res.type = JobType::ListDir;
     res.phase = StreamPhase::ListEnd;
     res.requestId = _active.requestId;
@@ -280,15 +282,16 @@ bool StorageJobQueue::tick() {
 void StorageJobQueue::poll() {
     if (!_resultQ || !_emit) return;
 
-    JobResult res{};
-    while (xQueueReceive(_resultQ, &res, 0) == pdTRUE) {
+    while (xQueueReceive(_resultQ, &_jobScratch, 0) == pdTRUE) {
+        JobResult& res = _jobScratch;
         if (res.requestId < _minValidRequestId) {
             logf(2, "poll drop stale result id=%lu min=%lu",
                  (unsigned long)res.requestId,
                  (unsigned long)_minValidRequestId);
             continue;
         }
-        UiEventPayload ev{};
+        _emitScratch = UiEventPayload{};
+        UiEventPayload& ev = _emitScratch;
 
         if (res.type == JobType::ListDir) {
             if (res.phase == StreamPhase::ListStart) {
@@ -302,28 +305,14 @@ void StorageJobQueue::poll() {
                 ev.files[0] = res.entry;
                 strncpy(ev.listFolder, res.folder, sizeof(ev.listFolder) - 1);
             } else if (res.phase == StreamPhase::ListEnd) {
-                // #region agent log
-                logf(2,
-                     "{\"sessionId\":\"36936e\",\"runId\":\"initial\",\"hypothesisId\":\"H2,H3\","
-                     "\"location\":\"StorageJobQueue.cpp:248\",\"message\":\"list end result before ui emit\","
-                     "\"data\":{\"requestId\":%lu,\"ok\":%d,\"fileCount\":%u,\"total\":%u,"
-                     "\"folder\":\"%s\",\"first\":\"%s\",\"firstFolder\":%d}}",
-                     (unsigned long)res.requestId,
-                     res.ok ? 1 : 0,
-                     (unsigned)res.fileCount,
-                     (unsigned)res.listTotal,
-                     res.folder,
-                     res.fileCount ? res.files[0].name : "",
-                     res.fileCount ? (res.files[0].isFolder ? 1 : 0) : -1);
-                // #endregion
-                UiEventPayload endEv{};
-                endEv.type = UiEvent::FileListStreamEnd;
-                endEv.result = res.ok ? UiResult::Ok : UiResult::Failed;
-                endEv.listRequestId = res.requestId;
-                endEv.listTotal = res.listTotal;
-                strncpy(endEv.listFolder, res.folder, sizeof(endEv.listFolder) - 1);
-                _emit(endEv, _emitUser);
+                ev.type = UiEvent::FileListStreamEnd;
+                ev.result = res.ok ? UiResult::Ok : UiResult::Failed;
+                ev.listRequestId = res.requestId;
+                ev.listTotal = res.listTotal;
+                strncpy(ev.listFolder, res.folder, sizeof(ev.listFolder) - 1);
+                _emit(ev, _emitUser);
 
+                ev = UiEventPayload{};
                 ev.type = UiEvent::FileListReady;
                 ev.result = res.ok ? UiResult::Ok : UiResult::Failed;
                 ev.listRequestId = res.requestId;
@@ -334,8 +323,8 @@ void StorageJobQueue::poll() {
                 for (uint8_t i = 0; i < res.fileCount && i < UI_FILE_PAGE_SIZE; i++) {
                     ev.files[i] = res.files[i];
                 }
-                
-                logf(2, "Emitting FileListReady: fileCount=%d total=%d folder=%s", 
+
+                logf(2, "Emitting FileListReady: fileCount=%d total=%d folder=%s",
                      res.fileCount, res.listTotal, res.folder);
             }
         } else if (res.type == JobType::DeleteFile) {

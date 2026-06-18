@@ -1,4 +1,6 @@
 #include "StorageManager.h"
+#include "ui/UiTypes.h"
+#include "system/Mp3TagReader.h"
 #include <stdarg.h>
 
 #ifndef LOG_ERROR
@@ -110,10 +112,11 @@ int StorageManager::listDirectoryPage(const char* dirPath, DirEntry* out, int ma
     for (int i = 0; i < maxEntries; i++) {
         out[i].isFolder = false;
         out[i].name[0] = '\0';
+        out[i].title[0] = '\0';
         out[i].size = 0;
     }
 
-    char dir[256];
+    char dir[UI_PATH_MAX];
     normalizePathTo(dirPath, dir, sizeof(dir));
 
     File root = SD.open(dir);
@@ -157,6 +160,10 @@ int StorageManager::listDirectoryPage(const char* dirPath, DirEntry* out, int ma
 
                 strncpy(entry.name, base, sizeof(entry.name) - 1);
                 entry.name[sizeof(entry.name) - 1] = '\0';
+                entry.title[0] = '\0';
+                if (isMp3) {
+                    Mp3TagReader::readTitle(file, entry.title, sizeof(entry.title));
+                }
                 entry.size = (uint32_t)file.size();
                 entry.isFolder = isDir;
                 filled++;

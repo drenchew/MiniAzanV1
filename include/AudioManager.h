@@ -26,8 +26,10 @@ public:
     };
 
     using LogFn = void (*)(int level, const char* tag, const char* message);
+    using MetadataFn = void (*)(const char* title, void* user);
 
     bool begin(StorageManager& storage, const Config& cfg, LogFn logFn = nullptr);
+    void setMetadataCallback(MetadataFn fn, void* user = nullptr);
     void setVolume(uint8_t volume);
 
     /** Queue play (any task) — executed on AudioTask only. */
@@ -71,6 +73,8 @@ private:
 
     QueueHandle_t _cmdQ = nullptr;
     TaskHandle_t _task = nullptr;
+    MetadataFn _metaCb = nullptr;
+    void* _metaUser = nullptr;
     volatile bool _playing = false;
     volatile bool _paused = false;
 };
