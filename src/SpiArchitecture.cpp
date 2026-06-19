@@ -3,6 +3,17 @@
 
 namespace SpiArch {
 
+#if MINI_AZAN_HAS_PSRAM
+SPIClass& sdSpi() {
+    static SPIClass bus(FSPI);
+    return bus;
+}
+
+SPIClass& uiSpi() {
+    static SPIClass bus(HSPI);
+    return bus;
+}
+#else
 SPIClass& sdSpi() {
     static SPIClass bus(VSPI);
     return bus;
@@ -12,6 +23,7 @@ SPIClass& uiSpi() {
     static SPIClass bus(HSPI);
     return bus;
 }
+#endif
 
 static BusInitResult beginSpiBus(SPIClass& spi, int hostLabel, int sck, int miso, int mosi) {
     BusInitResult r{};
@@ -37,6 +49,9 @@ BusInitResult initUiBus() {
     pinMode(UI_TOUCH_CS, OUTPUT);
     digitalWrite(UI_TOUCH_CS, HIGH);
     pinMode(UI_TFT_DC, OUTPUT);
+    if (UI_TFT_RST >= 0) {
+        pinMode(UI_TFT_RST, OUTPUT);
+    }
     return beginSpiBus(uiSpi(), UI_HOST, UI_SCK, UI_MISO, UI_MOSI);
 }
 

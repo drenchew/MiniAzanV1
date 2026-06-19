@@ -1,44 +1,51 @@
 #pragma once
 
 #include <SPI.h>
+#include "BoardConfig.h"
+
+#if MINI_AZAN_HAS_PSRAM
+#include <driver/spi_master.h>
+#endif
 
 /**
  * SPI bus ownership (mandatory for this project)
  * -----------------------------------------------
- * BUS 1 (VSPI): SD card ONLY — StorageManager + AudioManager (via StorageManager)
- * BUS 2 (HSPI): TFT + touch ONLY — UIManager (future; must not touch SD)
+ * ESP32:     VSPI = SD only,  HSPI = TFT + touch
+ * ESP32-S3:  FSPI = SD only,  HSPI = TFT + touch  (separate physical buses)
  *
  * Rules:
  * - Never call SD.begin() outside StorageManager.
- * - Never use SPI / HSPI from main, web handlers, or future UI for SD.
+ * - Never use the UI SPI bus for SD access.
  * - ESP32-audioI2S reads SD only through connecttoFS(StorageManager::mediaFs(), ...).
- * - UiSpi / HSPI must not be started until UIManager is integrated.
  */
 namespace SpiArch {
 
+#if MINI_AZAN_HAS_PSRAM
+constexpr int SD_HOST = SPI2_HOST;   // FSPI
+constexpr int UI_HOST = SPI3_HOST;   // HSPI
+#else
 constexpr int SD_HOST = VSPI;
 constexpr int UI_HOST = HSPI;
+#endif
 
-// VSPI — SD card (must match wiring)
-constexpr int SD_SCK  = 18;
-constexpr int SD_MISO = 19;
-constexpr int SD_MOSI = 23;
-constexpr int SD_CS   = 5;
+constexpr int SD_SCK  = BoardConfig::SD_SCK;
+constexpr int SD_MISO = BoardConfig::SD_MISO;
+constexpr int SD_MOSI = BoardConfig::SD_MOSI;
+constexpr int SD_CS   = BoardConfig::SD_CS;
 
-// HSPI — reserved for TFT + touch (UIManager only; do not use for SD)
-constexpr int UI_SCK  = 14;
-constexpr int UI_MISO = 12;
-constexpr int UI_MOSI = 13;
-constexpr int UI_TFT_CS   = 15;
-constexpr int UI_TFT_DC   = 2;
-constexpr int UI_TFT_RST  = 32;
-constexpr int UI_TOUCH_CS = 33;
-/** Optional XPT2046 pen IRQ (input-only GPIO). Set -1 to disable. */
-constexpr int UI_TOUCH_IRQ = 34;
+constexpr int UI_SCK       = BoardConfig::UI_SCK;
+constexpr int UI_MISO      = BoardConfig::UI_MISO;
+constexpr int UI_MOSI      = BoardConfig::UI_MOSI;
+constexpr int UI_TFT_CS    = BoardConfig::UI_TFT_CS;
+constexpr int UI_TFT_DC    = BoardConfig::UI_TFT_DC;
+constexpr int UI_TFT_RST   = BoardConfig::UI_TFT_RST;
+constexpr int UI_TOUCH_CS  = BoardConfig::UI_TOUCH_CS;
+/** XPT2046 pen IRQ (active LOW). Set -1 to disable. */
+constexpr int UI_TOUCH_IRQ = BoardConfig::UI_TOUCH_IRQ;
 
 struct BusInitResult {
     bool ok = false;
-    int hostId = -1;  // ESP32: VSPI=3 HSPI=2 (Arduino SPIClass::bus())
+    int hostId = -1;
     int sck = 0;
     int miso = 0;
     int mosi = 0;
@@ -47,13 +54,13 @@ struct BusInitResult {
 SPIClass& sdSpi();
 SPIClass& uiSpi();
 
-/** VSPI: SD only — call once before SD.begin(). */
+/** SD bus — call once before SD.begin(). */
 BusInitResult initSdBus();
 
-/** HSPI: TFT + touch — call once before tft.init() / touch.begin(). */
+/** TFT + touch bus — call once before tft.init() / touch.begin(). */
 BusInitResult initUiBus();
 
-/** Drive TFT CS high so XPT2046 can use shared MISO (required during touch SPI). */
+/** Drive TFT CS high so XPT2046 can use shared MISO during touch SPI. */
 void releaseTftChipSelect();
 
 }  // namespace SpiArch

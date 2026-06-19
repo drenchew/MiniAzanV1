@@ -1,4 +1,5 @@
 #include "AudioManager.h"
+#include "BoardConfig.h"
 #include "system/AzanSafeMode.h"
 #include "system/MemoryGuard.h"
 #include <stdarg.h>
@@ -12,8 +13,13 @@
 
 namespace {
 
+#if MINI_AZAN_HAS_PSRAM
+constexpr int kAudioInputBufferRamBytes = 8192;
+constexpr int kAudioInputBufferPsramBytes = 32768;
+#else
 constexpr int kAudioInputBufferRamBytes = 8192;
 constexpr int kAudioInputBufferPsramBytes = 0;
+#endif
 AudioManager* gAudioCallbackOwner = nullptr;
 AudioManager::MetadataFn gMetaCb = nullptr;
 void* gMetaUser = nullptr;

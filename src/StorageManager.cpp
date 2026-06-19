@@ -10,8 +10,16 @@
 #define LOG_DEBUG 3
 #endif
 
-static_assert(SpiArch::SD_HOST == VSPI, "SD card must use VSPI (bus 1) only");
-static_assert(SpiArch::UI_HOST == HSPI, "TFT/touch must use HSPI (bus 2) only");
+static_assert(SpiArch::SD_HOST != SpiArch::UI_HOST,
+              "SD and UI must use separate SPI hosts");
+
+#if MINI_AZAN_HAS_PSRAM
+static_assert(SpiArch::SD_HOST == SPI2_HOST, "SD card must use FSPI (SPI2) on ESP32-S3");
+static_assert(SpiArch::UI_HOST == SPI3_HOST, "TFT/touch must use HSPI (SPI3) on ESP32-S3");
+#else
+static_assert(SpiArch::SD_HOST == VSPI, "SD card must use VSPI on ESP32");
+static_assert(SpiArch::UI_HOST == HSPI, "TFT/touch must use HSPI on ESP32");
+#endif
 
 void StorageManager::logf(int level, const char* tag, const char* fmt, ...) const {
     if (!_log) return;

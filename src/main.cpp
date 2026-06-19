@@ -5,6 +5,7 @@
 #include <nvs_flash.h>
 #include <nvs.h>
 #include <Wire.h>
+#include "BoardConfig.h"
 #include "SpiArchitecture.h"
 #include "StorageManager.h"
 #include "TimeManager.h"
@@ -36,10 +37,7 @@
 #define LOG_INFO     2
 #define LOG_DEBUG    3
 
-// --- ПИНОВЕ ЗА ХАРДУЕР ---
-#define I2S_LRC        25
-#define I2S_BCLK       26
-#define I2S_DOUT       27
+// --- Hardware pins (see include/BoardConfig.h) ---
 
 #define DEFAULT_VOLUME 9
 
@@ -255,7 +253,9 @@ void setup() {
     Serial.begin(115200);
     delay(500);
     
-    appLogf(APP_LOG_INFO, "BOOT", "=== MiniAzan v1 Starting ===");
+    appLogf(APP_LOG_INFO, "BOOT", "=== MiniAzan v1 Starting (%s) ===",
+            BoardConfig::kTargetName);
+    MemoryGuard::logBootSnapshot();
     
     // CRITICAL: MemoryManager::begin() must be called FIRST, before any other initialization.
     // It allocates all pools from heap in size-descending order to prevent fragmentation.
@@ -309,7 +309,7 @@ void setup() {
     
     appLog(APP_LOG_INFO, "BOOT", "Initializing audio manager...");
     AudioManager::Config audioCfg{};
-    audioCfg.pins = {I2S_BCLK, I2S_LRC, I2S_DOUT};
+    audioCfg.pins = {BoardConfig::I2S_BCLK, BoardConfig::I2S_LRC, BoardConfig::I2S_DOUT};
     audioCfg.defaultVolume = currentVolume;
     audioCfg.minVolume = MIN_VOLUME;
     audioCfg.maxVolume = MAX_VOLUME;
