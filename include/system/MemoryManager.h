@@ -45,7 +45,6 @@
 #include <cstdlib>
 #include <freertos/FreeRTOS.h>
 #include <freertos/portmacro.h>
-#include "BoardConfig.h"
 
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -57,20 +56,14 @@ namespace MemCfg {
 // ── Audio MP3 decode staging (SD → ESP32-audioI2S pipeline) ─────────────────
 /// Bytes per audio staging block (one MP3 frame + header headroom)
 constexpr size_t AUDIO_BLOCK_SIZE  = 512;
-#if MINI_AZAN_HAS_PSRAM
-constexpr size_t AUDIO_BLOCK_COUNT = 16;
-#else
-constexpr size_t AUDIO_BLOCK_COUNT = 12;
-#endif
+/// Number of staging blocks — covers 3–4 concurrent MP3 frames
+constexpr size_t AUDIO_BLOCK_COUNT = 12;       // 4 096 B total
 
 // ── SD streaming read chunks (fatfs reads into these before decode) ──────────
 /// Bytes per SD read chunk — matches typical FAT sector multiple
 constexpr size_t SD_BLOCK_SIZE  = 1024;
-#if MINI_AZAN_HAS_PSRAM
-constexpr size_t SD_BLOCK_COUNT = 12;
-#else
-constexpr size_t SD_BLOCK_COUNT = 8;
-#endif
+/// Number of SD read blocks
+constexpr size_t SD_BLOCK_COUNT = 8;          // 8 192 B total
 
 // // ── Bluetooth SPP TX staging ─────────────────────────────────────────────────
 // constexpr size_t BT_TX_BLOCK_SIZE  = 512;
@@ -80,27 +73,25 @@ constexpr size_t SD_BLOCK_COUNT = 8;
 // constexpr size_t BT_RX_BLOCK_SIZE  = 512;
 // constexpr size_t BT_RX_BLOCK_COUNT = 4;       // 2 048 B total
 
-// ── LVGL DMA draw buffers (internal SRAM — DMA cannot use PSRAM) ─────────────
+// ── LVGL DMA draw buffers ────────────────────────────────────────────────────
 /// Display width in pixels (ILI9341 portrait)
 constexpr size_t LVGL_DRAW_WIDTH  = 240;
-#if MINI_AZAN_HAS_PSRAM
-/// Lines per flush — must match UiPanel::kBufLines
-constexpr size_t LVGL_DRAW_LINES  = 20;
-constexpr size_t LVGL_DRAW_BUF_COUNT = 2;
-#else
+/// Lines per flush — must match UiPanel::kBufLines (currently 20)
 constexpr size_t LVGL_DRAW_LINES  = 10;
-constexpr size_t LVGL_DRAW_BUF_COUNT = 1;
-#endif
 /// Total pixels per draw buffer
-constexpr size_t LVGL_DRAW_PIXELS = LVGL_DRAW_WIDTH * LVGL_DRAW_LINES;
+constexpr size_t LVGL_DRAW_PIXELS = LVGL_DRAW_WIDTH * LVGL_DRAW_LINES; // 4 800
 /// Bytes per draw buffer (16 bpp = 2 bytes/pixel)
-constexpr size_t LVGL_DRAW_BYTES  = LVGL_DRAW_PIXELS * 2;
+constexpr size_t LVGL_DRAW_BYTES  = LVGL_DRAW_PIXELS * 2;              // 9 600 B
 
-// ── Aggregate boot-time pool footprint (informational) ─────────────────────
+// ── Aggregate BSS footprint (compile-time) ───────────────────────────────────
 constexpr size_t TOTAL_POOL_BYTES =
-    (AUDIO_BLOCK_SIZE  * AUDIO_BLOCK_COUNT) +
-    (SD_BLOCK_SIZE     * SD_BLOCK_COUNT)    +
-    (LVGL_DRAW_BYTES   * LVGL_DRAW_BUF_COUNT);
+    (AUDIO_BLOCK_SIZE  * AUDIO_BLOCK_COUNT) +   //  4 096 B
+    (SD_BLOCK_SIZE     * SD_BLOCK_COUNT)    +   //  8 192 B
+    //(BT_TX_BLOCK_SIZE  * BT_TX_BLOCK_COUNT) +   //  2 048 B
+   // (BT_RX_BLOCK_SIZE  * BT_RX_BLOCK_COUNT) +   //  2 048 B
+    (LVGL_DRAW_BYTES   * 1);                    // 19 200 B (mono buffer)
+    // ─────────────────────────────────────────────────────
+    //  TOTAL: 35 584 B  ≈  34.75 KB  (static BSS — no heap)
 
 }  // namespace MemCfg
 
@@ -174,21 +165,11 @@ public:
 
         size_t allocated = 0;
         for (size_t i = 0; i < BlockCount; ++i) {
-            // Audio/SD pools may live in PSRAM on S3; LVGL DMA buffers stay internal.
-#if MINI_AZAN_HAS_PSRAM
-            _blocks[i] = static_cast<uint8_t*>(
-                heap_caps_malloc(BlockSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
-            );
-            if (!_blocks[i]) {
-                _blocks[i] = static_cast<uint8_t*>(
-                    heap_caps_malloc(BlockSize, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
-                );
-            }
-#else
+            // Allocate each block from heap with default caps (PSRAM preferred, internal fallback)
+            // These pools don't require DMA, so they can use PSRAM if available
             _blocks[i] = static_cast<uint8_t*>(
                 heap_caps_malloc(BlockSize, MALLOC_CAP_DEFAULT)
             );
-#endif
             if (!_blocks[i]) {
                 // Allocation failed — clean up what we allocated so far
                 cleanup();
@@ -347,9 +328,7 @@ extern HeapBlockPool<MemCfg::SD_BLOCK_SIZE,     MemCfg::SD_BLOCK_COUNT>     gSdS
  */
 ///@{
 extern uint16_t* gLvglDrawBufA;
-#if MINI_AZAN_HAS_PSRAM
-extern uint16_t* gLvglDrawBufB;
-#endif
+//extern uint16_t* gLvglDrawBufB;
 ///@}
 
 

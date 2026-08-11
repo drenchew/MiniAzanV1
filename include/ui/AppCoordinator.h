@@ -86,7 +86,6 @@ private:
     void handlePlayFile(const char* path);
     void handlePauseAudio();
     void handleResumeAudio();
-    void handleAudioTitle(const char* title);
     bool storageBlocked() const;
     static const char* prayerName(int idx);
 

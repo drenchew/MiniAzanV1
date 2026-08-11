@@ -7,17 +7,12 @@
 #define LV_CONF_H
 
 #include <stdint.h>
-#include "BoardConfigPins.h"
 
 #define LV_COLOR_DEPTH     16
 #define LV_COLOR_16_SWAP   0
 
 #define LV_MEM_CUSTOM      0
-#if MINI_AZAN_HAS_PSRAM
-#define LV_MEM_SIZE        (96U * 1024U)
-#else
 #define LV_MEM_SIZE        (28U * 1024U)
-#endif
 #define LV_MEM_BUF_MAX_NUM 8
 
 #define LV_USE_LOG         0

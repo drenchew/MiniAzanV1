@@ -22,7 +22,6 @@
 #include "system/MemoryManager.h"
 #include "system/AzanSafeMode.h"
 #include "AppLog.h"
-#include "BoardConfig.h"
 #include <esp_heap_caps.h>
 #include <cstdlib>
 
@@ -70,18 +69,12 @@ uint16_t* gLvglDrawBufB = nullptr;
 namespace MemoryManager {
 
 void begin() {
-    appLogf(APP_LOG_INFO, "MPOOL",
-            "=== MemoryManager boot: %s PSRAM=%s ===",
-            BoardConfig::kTargetName,
-            MINI_AZAN_HAS_PSRAM ? "yes" : "no");
-#if MINI_AZAN_HAS_PSRAM
-    appLogf(APP_LOG_INFO, "MPOOL",
-            "heap internal free=%u  psram free=%u",
-            (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-            (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-#endif
-
     // ── Allocate pools in size-descending order to prevent fragmentation ─────
+    // Each pool is allocated from INTERNAL_SRAM with DMA capability.
+    // If any allocation fails, cleanup and log fatal error.
+
+    appLogf(APP_LOG_INFO, "MPOOL",
+            "=== MemoryManager boot sequence ===");
 
     // 1. SdStreamPool — 8192 B (LARGEST, allocate first)
     appLogf(APP_LOG_INFO, "MPOOL", "Allocating SdStreamPool (8192 B)...");
@@ -94,11 +87,8 @@ void begin() {
     appLogf(APP_LOG_INFO, "MPOOL", "  ✓ SdStreamPool ready  @0x%08x  8192 B",
             (unsigned)gSdStreamPool._blocks[0]);
 
-    // 2. LVGL draw buffers — internal DMA SRAM only
-    appLogf(APP_LOG_INFO, "MPOOL",
-            "Allocating LVGL draw buffers (%u B × %u)...",
-            (unsigned)MemCfg::LVGL_DRAW_BYTES,
-            (unsigned)MemCfg::LVGL_DRAW_BUF_COUNT);
+    // 2. LVGL Draw Buffers — 2 × 9600 B = 19200 B (DMA-critical)
+    appLogf(APP_LOG_INFO, "MPOOL", "Allocating LVGL draw buffers (9600 B × 2)...");
     gLvglDrawBufA = static_cast<uint16_t*>(
         heap_caps_malloc(MemCfg::LVGL_DRAW_BYTES, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL)
     );
@@ -108,24 +98,22 @@ void begin() {
         gSdStreamPool.cleanup();
         return;
     }
-    appLogf(APP_LOG_INFO, "MPOOL", "  ✓ gLvglDrawBufA ready  @0x%08x  %u B",
-            (unsigned)gLvglDrawBufA, (unsigned)MemCfg::LVGL_DRAW_BYTES);
+    appLogf(APP_LOG_INFO, "MPOOL", "  ✓ gLvglDrawBufA ready  @0x%08x  9600 B",
+            (unsigned)gLvglDrawBufA);
 
-#if MINI_AZAN_HAS_PSRAM
-    gLvglDrawBufB = static_cast<uint16_t*>(
-        heap_caps_malloc(MemCfg::LVGL_DRAW_BYTES, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL)
-    );
-    if (!gLvglDrawBufB) {
-        appLogf(APP_LOG_ERROR, "MPOOL",
-                "FATAL: gLvglDrawBufB heap allocation failed — device restart required");
-        heap_caps_free(gLvglDrawBufA);
-        gLvglDrawBufA = nullptr;
-        gSdStreamPool.cleanup();
-        return;
-    }
-    appLogf(APP_LOG_INFO, "MPOOL", "  ✓ gLvglDrawBufB ready  @0x%08x  %u B",
-            (unsigned)gLvglDrawBufB, (unsigned)MemCfg::LVGL_DRAW_BYTES);
-#endif
+//     gLvglDrawBufB = static_cast<uint16_t*>(
+//         heap_caps_malloc(MemCfg::LVGL_DRAW_BYTES, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL)
+//     );
+//     if (!gLvglDrawBufB) {
+//         appLogf(APP_LOG_ERROR, "MPOOL",
+//                 "FATAL: gLvglDrawBufB heap allocation failed — device restart required");
+//         heap_caps_free(gLvglDrawBufA);
+//         gLvglDrawBufA = nullptr;
+//         gSdStreamPool.cleanup();
+//         return;
+//     }
+   // appLogf(APP_LOG_INFO, "MPOOL", "  ✓ gLvglDrawBufB ready  @0x%08x  9600 B",
+   //         (unsigned)gLvglDrawBufB);
 
     // 3. AudioPool — 4096 B
     appLogf(APP_LOG_INFO, "MPOOL", "Allocating AudioPool (4096 B)...");
@@ -133,11 +121,9 @@ void begin() {
         appLogf(APP_LOG_ERROR, "MPOOL",
                 "FATAL: AudioPool heap allocation failed — device restart required");
         heap_caps_free(gLvglDrawBufA);
+      //  heap_caps_free(gLvglDrawBufB);
         gLvglDrawBufA = nullptr;
-#if MINI_AZAN_HAS_PSRAM
-        heap_caps_free(gLvglDrawBufB);
-        gLvglDrawBufB = nullptr;
-#endif
+       // gLvglDrawBufB = nullptr;
         gSdStreamPool.cleanup();
         return;
     }
@@ -230,15 +216,9 @@ void logStats(const char* tag) {
     appLogf(APP_LOG_INFO, t,
             "lvgl_dma     bufA=0x%08x  bufB=0x%08x  px=%u  bytes=%u",
             (unsigned)reinterpret_cast<uintptr_t>(gLvglDrawBufA),
-            (unsigned)reinterpret_cast<uintptr_t>(
-#if MINI_AZAN_HAS_PSRAM
-                gLvglDrawBufB
-#else
-                nullptr
-#endif
-            ),
+            //(unsigned)reinterpret_cast<uintptr_t>(gLvglDrawBufB),
             (unsigned)MemCfg::LVGL_DRAW_PIXELS,
-            (unsigned)(MemCfg::LVGL_DRAW_BYTES * MemCfg::LVGL_DRAW_BUF_COUNT));
+            (unsigned)(MemCfg::LVGL_DRAW_BYTES * 2));
 
     appLogf(APP_LOG_INFO, t,
             "azan_lock=%s  total_heap=%uB",

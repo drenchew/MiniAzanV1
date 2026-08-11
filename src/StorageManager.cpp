@@ -1,6 +1,4 @@
 #include "StorageManager.h"
-#include "ui/UiTypes.h"
-#include "system/Mp3TagReader.h"
 #include <stdarg.h>
 
 #ifndef LOG_ERROR
@@ -10,16 +8,8 @@
 #define LOG_DEBUG 3
 #endif
 
-static_assert(SpiArch::SD_HOST != SpiArch::UI_HOST,
-              "SD and UI must use separate SPI hosts");
-
-#if MINI_AZAN_HAS_PSRAM
-static_assert(SpiArch::SD_HOST == SPI2_HOST, "SD card must use FSPI (SPI2) on ESP32-S3");
-static_assert(SpiArch::UI_HOST == SPI3_HOST, "TFT/touch must use HSPI (SPI3) on ESP32-S3");
-#else
-static_assert(SpiArch::SD_HOST == VSPI, "SD card must use VSPI on ESP32");
-static_assert(SpiArch::UI_HOST == HSPI, "TFT/touch must use HSPI on ESP32");
-#endif
+static_assert(SpiArch::SD_HOST == VSPI, "SD card must use VSPI (bus 1) only");
+static_assert(SpiArch::UI_HOST == HSPI, "TFT/touch must use HSPI (bus 2) only");
 
 void StorageManager::logf(int level, const char* tag, const char* fmt, ...) const {
     if (!_log) return;
@@ -120,11 +110,10 @@ int StorageManager::listDirectoryPage(const char* dirPath, DirEntry* out, int ma
     for (int i = 0; i < maxEntries; i++) {
         out[i].isFolder = false;
         out[i].name[0] = '\0';
-        out[i].title[0] = '\0';
         out[i].size = 0;
     }
 
-    char dir[UI_PATH_MAX];
+    char dir[256];
     normalizePathTo(dirPath, dir, sizeof(dir));
 
     File root = SD.open(dir);
@@ -168,10 +157,6 @@ int StorageManager::listDirectoryPage(const char* dirPath, DirEntry* out, int ma
 
                 strncpy(entry.name, base, sizeof(entry.name) - 1);
                 entry.name[sizeof(entry.name) - 1] = '\0';
-                entry.title[0] = '\0';
-                if (isMp3) {
-                    Mp3TagReader::readTitle(file, entry.title, sizeof(entry.title));
-                }
                 entry.size = (uint32_t)file.size();
                 entry.isFolder = isDir;
                 filled++;

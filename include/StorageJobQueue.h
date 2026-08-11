@@ -85,9 +85,6 @@ private:
     int _listTotal = 0;
     uint8_t _batchCount = 0;
     UiFileEntry _batch[UI_FILE_PAGE_SIZE]{};
-    StorageManager::DirEntry _pageEntries[UI_FILE_PAGE_SIZE]{};
-    JobResult _jobScratch{};
-    UiEventPayload _emitScratch{};
     uint32_t _nextId = 1;
     uint32_t _minValidRequestId = 1;
 };

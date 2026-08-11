@@ -1,5 +1,4 @@
 #include "TimeManager.h"
-#include "BoardConfig.h"
 #include <WiFi.h>
 #include <time.h>
 #include <sys/time.h>
@@ -48,8 +47,6 @@ bool TimeManager::begin(const Config& cfg, LogFn logFn) {
     _lastRtcPollMs = 0;
     _lastDiagMs = 0;
     _lastDriftSec = 0;
-
-    Wire.begin(BoardConfig::I2C_SDA, BoardConfig::I2C_SCL);
 
     if (!_rtc.begin()) {
         seedFallbackClock();

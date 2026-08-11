@@ -89,21 +89,16 @@ bool UiPanel::begin(int width, int height) {
                   "MemCfg::LVGL_DRAW_LINES must equal UiPanel::kBufLines");
 
     _buf1 = reinterpret_cast<lv_color_t*>(gLvglDrawBufA);
-#if MINI_AZAN_HAS_PSRAM
-    _buf2 = reinterpret_cast<lv_color_t*>(gLvglDrawBufB);
-#else
-    _buf2 = nullptr;
-#endif
+   // _buf2 = reinterpret_cast<lv_color_t*>(gLvglDrawBufB);
 
     const uint32_t bufPixels = static_cast<uint32_t>(MemCfg::LVGL_DRAW_PIXELS);
-    lv_disp_draw_buf_init(&_drawBuf, _buf1, _buf2, bufPixels);
+    lv_disp_draw_buf_init(&_drawBuf, _buf1, nullptr, bufPixels);
 
     appLogf(APP_LOG_INFO, "UI",
-            "lvgl draw bufs: A=0x%08x  B=0x%08x  px=%u  lines=%d",
+            "lvgl draw bufs: A=0x%08x  B=0x%08x  px=%u  (static BSS, no heap)",
             (unsigned)reinterpret_cast<uintptr_t>(_buf1),
-            (unsigned)reinterpret_cast<uintptr_t>(_buf2),
-            (unsigned)bufPixels,
-            kBufLines);
+            //(unsigned)reinterpret_cast<uintptr_t>(_buf2),
+            (unsigned)bufPixels);
 
     lv_disp_drv_init(&_dispDrv);
     _dispDrv.hor_res = (lv_coord_t)width;

@@ -2,19 +2,28 @@
 
 #include <Arduino.h>
 #include <Audio.h>
+#include <driver/i2s.h>
 #include "StorageManager.h"
+#include "BoardConfig.h"
 #include "freertos/queue.h"
 
-// Non-blocking I2S playback (ESP32-audioI2S). All play/stop runs on AudioTask only.
+// MP3 playback via ESP32-audioI2S. Output: internal DAC (AUX) or external I2S.
 class AudioManager {
 public:
+    enum class OutputMode : uint8_t {
+        I2sExternal = 0,
+        InternalDacAux,
+    };
+
     struct Pins {
-        int bclk;
-        int lrc;
-        int dout;
+        int bclk = -1;
+        int lrc = -1;
+        int dout = -1;
     };
 
     struct Config {
+        OutputMode outputMode = BoardConfig::kAudioAuxDac ? OutputMode::InternalDacAux
+                                                          : OutputMode::I2sExternal;
         Pins pins{};
         uint8_t defaultVolume = 9;
         uint8_t minVolume = 0;
@@ -26,26 +35,26 @@ public:
     };
 
     using LogFn = void (*)(int level, const char* tag, const char* message);
-    using MetadataFn = void (*)(const char* title, void* user);
+
+    AudioManager() = default;
+    ~AudioManager();
 
     bool begin(StorageManager& storage, const Config& cfg, LogFn logFn = nullptr);
-    void setMetadataCallback(MetadataFn fn, void* user = nullptr);
     void setVolume(uint8_t volume);
 
-    /** Queue play (any task) — executed on AudioTask only. */
     bool requestPlay(const char* path);
     bool requestStop();
     bool requestPause();
     bool requestResume();
-    /** P0 fast lane: flush pending plays, wake AudioTask immediately. */
     bool requestEmergencyStop();
     bool requestSetVolume(uint8_t volume);
 
     bool isRunning();
     bool isPlayingFlag() const { return _playing; }
     bool isPausedFlag() const { return _paused; }
+    OutputMode outputMode() const { return _cfg.outputMode; }
 
-    Audio& library() { return _audio; }
+    Audio& library() { return *_audio; }
 
 private:
     enum class CmdType : uint8_t { Play = 0, Stop, Pause, Resume, SetVolume };
@@ -56,6 +65,9 @@ private:
         char path[kAudioPathMax]{};
         uint8_t volume = 0;
     };
+
+    bool createAudioInstance();
+    void destroyAudioInstance();
 
     static void taskEntry(void* arg);
     void taskLoop();
@@ -69,12 +81,11 @@ private:
     Config _cfg{};
     LogFn _log = nullptr;
     StorageManager* _storage = nullptr;
-    Audio _audio;
+    alignas(Audio) uint8_t _audioStorage[sizeof(Audio)]{};
+    Audio* _audio = nullptr;
 
     QueueHandle_t _cmdQ = nullptr;
     TaskHandle_t _task = nullptr;
-    MetadataFn _metaCb = nullptr;
-    void* _metaUser = nullptr;
     volatile bool _playing = false;
     volatile bool _paused = false;
 };

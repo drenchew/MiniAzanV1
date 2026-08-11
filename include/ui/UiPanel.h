@@ -32,11 +32,8 @@ private:
     lv_color_t* _buf2 = nullptr;  ///< second DMA buffer for double-buffering
     int16_t _lastTouchX = 0;
     int16_t _lastTouchY = 0;
-#if MINI_AZAN_HAS_PSRAM
-    static constexpr int kBufLines = 20;
-#else
+    // kBufLines MUST match MemCfg::LVGL_DRAW_LINES in MemoryManager.h
     static constexpr int kBufLines = 10;
-#endif
 };
 
 #endif

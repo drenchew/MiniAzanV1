@@ -1,7 +1,7 @@
 #include "AudioManager.h"
-#include "BoardConfig.h"
 #include "system/AzanSafeMode.h"
 #include "system/MemoryGuard.h"
+#include <new>
 #include <stdarg.h>
 
 #ifndef LOG_ERROR
@@ -13,16 +13,8 @@
 
 namespace {
 
-#if MINI_AZAN_HAS_PSRAM
-constexpr int kAudioInputBufferRamBytes = 8192;
-constexpr int kAudioInputBufferPsramBytes = 32768;
-#else
 constexpr int kAudioInputBufferRamBytes = 8192;
 constexpr int kAudioInputBufferPsramBytes = 0;
-#endif
-AudioManager* gAudioCallbackOwner = nullptr;
-AudioManager::MetadataFn gMetaCb = nullptr;
-void* gMetaUser = nullptr;
 
 template<int N>
 struct AudioBufferPriority : AudioBufferPriority<N - 1> {};
@@ -58,20 +50,45 @@ bool configureAudioInputBuffer(T&, AudioBufferPriority<0>) {
 
 }  // namespace
 
-void AudioManager::setMetadataCallback(MetadataFn fn, void* user) {
-    _metaCb = fn;
-    _metaUser = user;
-    gMetaCb = fn;
-    gMetaUser = user;
+AudioManager::~AudioManager() {
+    destroyAudioInstance();
 }
 
-void audio_id3data(const char* info) {
-    if (!info || !gMetaCb) return;
-    if (strncmp(info, "Title:", 6) != 0) return;
-    const char* title = info + 6;
-    while (*title == ' ') title++;
-    if (title[0]) {
-        gMetaCb(title, gMetaUser);
+bool AudioManager::createAudioInstance() {
+    destroyAudioInstance();
+
+    if (_cfg.outputMode == OutputMode::InternalDacAux) {
+#if defined(CONFIG_IDF_TARGET_ESP32)
+        _audio = new (_audioStorage) Audio(true, I2S_DAC_CHANNEL_RIGHT_EN);
+        logf(LOG_INFO, "AUDIO", "Output: internal DAC GPIO%d (AUX tip)", MINI_AZAN_AUX_DAC_GPIO);
+        return true;
+#else
+        logf(LOG_ERROR, "AUDIO", "Internal DAC not available on this chip (use I2S DAC module)");
+        return false;
+#endif
+    }
+
+    _audio = new (_audioStorage) Audio(false);
+    if (_cfg.pins.bclk < 0 || _cfg.pins.lrc < 0 || _cfg.pins.dout < 0) {
+        logf(LOG_ERROR, "AUDIO", "I2S pins not configured");
+        destroyAudioInstance();
+        return false;
+    }
+    if (!_audio->setPinout((uint8_t)_cfg.pins.bclk, (uint8_t)_cfg.pins.lrc, (uint8_t)_cfg.pins.dout)) {
+        logf(LOG_ERROR, "AUDIO", "setPinout failed BCLK=%d LRC=%d DOUT=%d",
+             _cfg.pins.bclk, _cfg.pins.lrc, _cfg.pins.dout);
+        destroyAudioInstance();
+        return false;
+    }
+    logf(LOG_INFO, "AUDIO", "Output: I2S BCLK=%d LRC=%d DOUT=%d",
+         _cfg.pins.bclk, _cfg.pins.lrc, _cfg.pins.dout);
+    return true;
+}
+
+void AudioManager::destroyAudioInstance() {
+    if (_audio) {
+        _audio->~Audio();
+        _audio = nullptr;
     }
 }
 
@@ -89,7 +106,12 @@ bool AudioManager::begin(StorageManager& storage, const Config& cfg, LogFn logFn
     _cfg = cfg;
     _storage = &storage;
     _log = logFn;
-    gAudioCallbackOwner = this;
+
+    if (_cfg.outputMode == OutputMode::I2sExternal && _cfg.pins.bclk < 0) {
+        _cfg.pins.bclk = BoardConfig::I2S_BCLK;
+        _cfg.pins.lrc = BoardConfig::I2S_LRC;
+        _cfg.pins.dout = BoardConfig::I2S_DOUT;
+    }
 
     if (!_cmdQ) {
         _cmdQ = xQueueCreate(4, sizeof(Command));
@@ -98,17 +120,20 @@ bool AudioManager::begin(StorageManager& storage, const Config& cfg, LogFn logFn
         return false;
     }
 
+    if (!createAudioInstance()) {
+        return false;
+    }
+
     const bool inputBufferConfigured =
-        configureAudioInputBuffer(_audio, AudioBufferPriority<3>{});
-    _audio.setPinout(_cfg.pins.bclk, _cfg.pins.lrc, _cfg.pins.dout);
-    _audio.setVolume(_cfg.defaultVolume);
+        configureAudioInputBuffer(*_audio, AudioBufferPriority<3>{});
+    _audio->setVolume(_cfg.defaultVolume);
     logf(LOG_INFO, "AUDIO", "Input buffer %s at %d bytes",
          inputBufferConfigured ? "capped" : "default",
          kAudioInputBufferRamBytes);
 
     BaseType_t ok = xTaskCreatePinnedToCore(
         taskEntry,
-        "AudioI2S",
+        "AudioOut",
         _cfg.taskStackWords,
         this,
         _cfg.taskPriority,
@@ -116,7 +141,8 @@ bool AudioManager::begin(StorageManager& storage, const Config& cfg, LogFn logFn
         _cfg.taskCore);
 
     if (ok != pdPASS) {
-        logf(LOG_ERROR, "AUDIO", "Failed to create I2S task");
+        logf(LOG_ERROR, "AUDIO", "Failed to create audio task");
+        destroyAudioInstance();
         return false;
     }
 
@@ -193,6 +219,7 @@ void AudioManager::setVolume(uint8_t volume) {
 }
 
 void AudioManager::drainCommands() {
+    if (!_audio) return;
     Command c{};
     while (_cmdQ && xQueueReceive(_cmdQ, &c, 0) == pdTRUE) {
         switch (c.type) {
@@ -212,7 +239,7 @@ void AudioManager::drainCommands() {
                 uint8_t v = c.volume;
                 if (v < _cfg.minVolume) v = _cfg.minVolume;
                 if (v > _cfg.maxVolume) v = _cfg.maxVolume;
-                _audio.setVolume(v);
+                _audio->setVolume(v);
                 break;
             }
             default:
@@ -222,7 +249,7 @@ void AudioManager::drainCommands() {
 }
 
 bool AudioManager::playFromSdInternal(const char* path) {
-    if (!_storage || !path || !path[0]) {
+    if (!_audio || !_storage || !path || !path[0]) {
         logf(LOG_ERROR, "AUDIO", "Invalid path or storage");
         return false;
     }
@@ -255,7 +282,7 @@ bool AudioManager::playFromSdInternal(const char* path) {
     _storage->setPlaybackLocked(true);
     AzanSafeMode::enter(path);
 
-    const bool ok = _audio.connecttoFS(_storage->mediaFs(), path);
+    const bool ok = _audio->connecttoFS(_storage->mediaFs(), path);
     if (!ok) {
         _storage->setPlaybackLocked(false);
         AzanSafeMode::exit();
@@ -270,7 +297,8 @@ bool AudioManager::playFromSdInternal(const char* path) {
 }
 
 void AudioManager::stopInternal() {
-    _audio.stopSong();
+    if (!_audio) return;
+    _audio->stopSong();
     _playing = false;
     _paused = false;
     if (_storage) {
@@ -282,27 +310,27 @@ void AudioManager::stopInternal() {
 }
 
 void AudioManager::pauseInternal() {
-    if (!_playing || _paused) {
+    if (!_audio || !_playing || _paused) {
         return;
     }
-    if (_audio.pauseResume()) {
+    if (_audio->pauseResume()) {
         _paused = true;
         logf(LOG_INFO, "AUDIO", "Paused");
     }
 }
 
 void AudioManager::resumeInternal() {
-    if (!_playing || !_paused) {
+    if (!_audio || !_playing || !_paused) {
         return;
     }
-    if (_audio.pauseResume()) {
+    if (_audio->pauseResume()) {
         _paused = false;
         logf(LOG_INFO, "AUDIO", "Resumed");
     }
 }
 
 bool AudioManager::isRunning() {
-    return _audio.isRunning();
+    return _audio && _audio->isRunning();
 }
 
 void AudioManager::taskEntry(void* arg) {
@@ -310,12 +338,14 @@ void AudioManager::taskEntry(void* arg) {
 }
 
 void AudioManager::taskLoop() {
-    logf(LOG_DEBUG, "AUDIO", "I2S pump (VSPI SD decode only on this task)");
+    logf(LOG_DEBUG, "AUDIO", "audio pump task running");
     while (true) {
         ulTaskNotifyTake(pdTRUE, 0);
         drainCommands();
-        _audio.loop();
-        if (_playing && !_paused && !_audio.isRunning()) {
+        if (_audio) {
+            _audio->loop();
+        }
+        if (_audio && _playing && !_paused && !_audio->isRunning()) {
             _playing = false;
             _paused = false;
             if (_storage) {

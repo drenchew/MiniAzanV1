@@ -20,10 +20,6 @@ const char* const kDefaultPrayerArcIcons[kPrayerCount] = {
     "•", "•", "•", "•", "•", "•"
 };
 
-const char* fileEntryLabel(const UiFileEntry& entry) {
-    return entry.title[0] ? entry.title : entry.name;
-}
-
 }  // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1184,12 +1180,8 @@ void UiScreens::populateFileList(const UiEventPayload& ev) {
         }
         _isFolder[i] = ev.files[i].isFolder;
 
-        const char* label = fileEntryLabel(ev.files[i]);
-        strncpy(_fileDisplayNames[i], label, sizeof(_fileDisplayNames[i]) - 1);
-        _fileDisplayNames[i][sizeof(_fileDisplayNames[i]) - 1] = '\0';
-
         const char* icon = ev.files[i].isFolder ? LV_SYMBOL_DIRECTORY : LV_SYMBOL_AUDIO;
-        lv_obj_t* btn = lv_list_add_btn(_listFiles, icon, _fileDisplayNames[i]);
+        lv_obj_t* btn = lv_list_add_btn(_listFiles, icon, ev.files[i].name);
 
         lv_obj_add_event_cb(btn, [](lv_event_t* e) {
             if (lv_event_get_code(e) != LV_EVENT_CLICKED || !g_active) return;
@@ -1213,12 +1205,9 @@ void UiScreens::populateFileList(const UiEventPayload& ev) {
                         sizeof(g_active->_currentPlayingPath) - 1);
                 if (g_active->_lblNowPlaying) {
                     char buf[80];
-                    const char* dn = g_active->_fileDisplayNames[idx];
-                    if (!dn[0]) {
-                        dn = g_active->_filePaths[idx];
-                        const char* sl = strrchr(dn, '/');
-                        if (sl) dn = sl + 1;
-                    }
+                    const char* dn = g_active->_filePaths[idx];
+                    const char* sl = strrchr(dn, '/');
+                    if (sl) dn = sl + 1;
                     snprintf(buf, sizeof(buf), "Playing: %s", dn);
                     lv_label_set_text(g_active->_lblNowPlaying, buf);
                 }
@@ -1416,10 +1405,6 @@ void UiScreens::onEvent(const UiEventPayload& ev) {
                     lv_obj_add_state(_btnPauseResume, LV_STATE_DISABLED);
                     lv_label_set_text(lv_obj_get_child(_btnPauseResume, 0), LV_SYMBOL_PLAY);
                 }
-            }
-            if (_screen == UiScreenId::QuranPlayer && _lblNowPlaying && ev.nowPlayingTitle[0]) {
-                snprintf(buf, sizeof(buf), "Playing: %s", ev.nowPlayingTitle);
-                lv_label_set_text(_lblNowPlaying, buf);
             }
             break;
 
